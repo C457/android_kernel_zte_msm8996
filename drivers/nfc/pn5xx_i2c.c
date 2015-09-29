@@ -93,6 +93,7 @@ struct pn5xx_dev	{
 	wait_queue_head_t	read_wq;
 	struct mutex		read_mutex;
 	struct mutex		write_mutex;
+	struct mutex		irq_wake_mutex;
 	struct i2c_client	*client;
 	struct miscdevice	pn5xx_device;
 	unsigned int		ven_gpio;
@@ -104,6 +105,7 @@ struct pn5xx_dev	{
 	bool                nfc_ven_enabled; /* stores the VEN pin state powered by Nfc */
 	bool                spi_ven_enabled; /* stores the VEN pin state powered by Spi */
 	bool			irq_enabled;
+	bool			irq_wake_enabled;
 	spinlock_t		irq_enabled_lock;
 };
 
@@ -155,6 +157,52 @@ static void remove_nfc_info_proc_file(void)
 	}
 }
 /*add nfc id information end*/
+
+/*
+ *FUNCTION: pn5xx_disable_irq_wake
+ *DESCRIPTION: disable irq wakeup function
+ *Parameters
+ * struct  pn5xx_dev *: device structure
+ *RETURN VALUE
+ * none
+ */
+static void pn5xx_disable_irq_wake(struct pn5xx_dev *pn5xx_dev)
+{
+	int ret = 0;
+
+	mutex_lock(&pn5xx_dev->irq_wake_mutex);
+	if (pn5xx_dev->irq_wake_enabled) {
+		pn5xx_dev->irq_wake_enabled = false;
+		ret = irq_set_irq_wake(pn5xx_dev->client->irq,0);
+		if (ret) {
+			pr_err("%s failed: ret=%d\n", __func__, ret);
+		}
+	}
+	mutex_unlock(&pn5xx_dev->irq_wake_mutex);
+}
+
+/*
+ *FUNCTION: pn5xx_enable_irq_wake
+ *DESCRIPTION: enable irq wakeup function
+ *Parameters
+ * struct  pn5xx_dev *: device structure
+ *RETURN VALUE
+ * none
+ */
+static void pn5xx_enable_irq_wake(struct pn5xx_dev *pn5xx_dev)
+{
+	int ret = 0;
+
+	mutex_lock(&pn5xx_dev->irq_wake_mutex);
+	if (!pn5xx_dev->irq_wake_enabled) {
+		pn5xx_dev->irq_wake_enabled = true;
+		ret = irq_set_irq_wake(pn5xx_dev->client->irq,1);
+		if (ret) {
+			pr_err("%s failed: ret=%d\n", __func__, ret);
+		}
+	}
+	mutex_unlock(&pn5xx_dev->irq_wake_mutex);
+}
 
 static void pn5xx_disable_irq(struct pn5xx_dev *pn5xx_dev)
 {
@@ -331,7 +379,7 @@ static long pn5xx_dev_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			gpio_set_value(pn5xx_dev->firm_gpio, 0);
 			gpio_set_value(pn5xx_dev->ven_gpio, 1);
 			msleep(20);
-			irq_set_irq_wake(pn5xx_dev->client->irq, 1);
+			pn5xx_enable_irq_wake(pn5xx_dev);
 #ifdef CONFIG_NFC_ENABLE_BB_CLK2
 			if (clk_run == false) {
 			   msleep(20);
@@ -350,7 +398,7 @@ static long pn5xx_dev_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			gpio_set_value(pn5xx_dev->ven_gpio, 0);
 
 			msleep(20);
-			irq_set_irq_wake(pn5xx_dev->client->irq, 0);
+			pn5xx_disable_irq_wake(pn5xx_dev);
 #ifdef CONFIG_NFC_ENABLE_BB_CLK2
 			if (clk_run == true) {
 				msleep(20);
@@ -530,6 +578,7 @@ static int pn5xx_probe(struct i2c_client *client, const struct i2c_device_id *id
 	}
 
 	pn5xx_dev->client = client;
+	pn5xx_dev->irq_wake_enabled = false;
 	if (client->dev.of_node) {
 		of_node = client->dev.of_node;
 		ret = of_get_named_gpio(of_node, "nxp,pn5xx-irq", 0);
@@ -586,6 +635,7 @@ static int pn5xx_probe(struct i2c_client *client, const struct i2c_device_id *id
 		init_waitqueue_head(&pn5xx_dev->read_wq);
 		mutex_init(&pn5xx_dev->read_mutex);
 		mutex_init(&pn5xx_dev->write_mutex);
+		mutex_init(&pn5xx_dev->irq_wake_mutex);
 		spin_lock_init(&pn5xx_dev->irq_enabled_lock);
 
 		/*nfc_wake_lock = wakeup_source_register("nfctimer");*/
@@ -657,6 +707,7 @@ err_request_irq_failed:
 err_misc_register:
 	mutex_destroy(&pn5xx_dev->read_mutex);
 	mutex_destroy(&pn5xx_dev->write_mutex);
+	mutex_destroy(&pn5xx_dev->irq_wake_mutex);
 #ifdef ENABLE_NFC_DOUBLE_SIM_SWITCH
 err_swp2_gpio:
 	gpio_free(pn5xx_dev->swp2_pwr_gpio);
@@ -706,6 +757,7 @@ static int pn5xx_remove(struct i2c_client *client)
 	misc_deregister(&pn5xx_dev->pn5xx_device);
 	mutex_destroy(&pn5xx_dev->read_mutex);
 	mutex_destroy(&pn5xx_dev->write_mutex);
+	mutex_destroy(&pn548_dev->irq_wake_mutex);
 	gpio_free(pn5xx_dev->irq_gpio);
 	gpio_free(pn5xx_dev->ven_gpio);
 #ifdef ENABLE_NFC_ESE_PWR_GPIO
