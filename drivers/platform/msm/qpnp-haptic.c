@@ -1632,6 +1632,7 @@ static int qpnp_hap_set(struct qpnp_hap *hap, int on)
 {
 	u8 auto_res_mode_qwd;
 	int rc = 0;
+	u8 val = 0;
 	unsigned long timeout_ns = POLL_TIME_AUTO_RES_ERR_NS;
 	u32 back_emf_delay_us = hap->time_required_to_generate_back_emf_us;
 
