@@ -1180,7 +1180,11 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 		goto FREE_VREG_DATA;
 	}
 
-<<<<<<< HEAD
+	sensordata->power_info.ois_en_gpio = of_get_named_gpio(of_node,
+		"qcom,platform-ois-en-gpio", 0);
+	if (!gpio_is_valid(sensordata->power_info.ois_en_gpio))
+		pr_err("%s:%d, ois enable gpio not specified\n",__func__, __LINE__);
+
 	/* Get custom mode */
 	rc = of_property_read_u32(of_node, "qcom,secure",
 		&s_ctrl->is_secure);
@@ -1190,12 +1194,6 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 		s_ctrl->is_secure = 0;
 		rc = 0;
 	}
-=======
-	sensordata->power_info.ois_en_gpio = of_get_named_gpio(of_node,
-		"qcom,platform-ois-en-gpio", 0);
-	if (!gpio_is_valid(sensordata->power_info.ois_en_gpio))
-		pr_err("%s:%d, ois enable gpio not specified\n",__func__, __LINE__);
->>>>>>> 5e1dff5... drivers: media: camera_v2: Import ZTE changes
 
 	/* Get CCI master */
 	rc = of_property_read_u32(of_node, "qcom,cci-master",
