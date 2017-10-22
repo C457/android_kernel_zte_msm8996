@@ -30,6 +30,10 @@
 #include <trace/events/power.h>
 #include <linux/compiler.h>
 #include <linux/wakeup_reason.h>
+#ifdef CONFIG_BOARD_AILSA_II
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
+#endif
 
 #include "power.h"
 
@@ -42,6 +46,9 @@ static DECLARE_WAIT_QUEUE_HEAD(suspend_freeze_wait_head);
 
 enum freeze_state __read_mostly suspend_freeze_state;
 static DEFINE_SPINLOCK(suspend_freeze_lock);
+#ifdef CONFIG_BOARD_AILSA_II
+extern int sleepstate_gpio;
+#endif
 
 void freeze_set_ops(const struct platform_freeze_ops *ops)
 {
@@ -474,6 +481,7 @@ static void suspend_finish(void)
  * Fail if that's not the case.  Otherwise, prepare for system suspend, make the
  * system enter the given sleep state and clean up after wakeup.
  */
+extern void suspend_sys_sync_queue(void);
 static int enter_state(suspend_state_t state)
 {
 	int error;
@@ -496,11 +504,7 @@ static int enter_state(suspend_state_t state)
 	if (state == PM_SUSPEND_FREEZE)
 		freeze_begin();
 
-	trace_suspend_resume(TPS("sync_filesystems"), 0, true);
-	printk(KERN_INFO "PM: Syncing filesystems ... ");
-	sys_sync();
-	printk("done.\n");
-	trace_suspend_resume(TPS("sync_filesystems"), 0, false);
+	suspend_sys_sync_queue();
 
 	pr_debug("PM: Preparing system for %s sleep\n", pm_states[state]);
 	error = suspend_prepare(state);
@@ -551,7 +555,23 @@ int pm_suspend(suspend_state_t state)
 		return -EINVAL;
 
 	pm_suspend_marker("entry");
+
+#ifdef CONFIG_BOARD_AILSA_II
+	if (-1 != sleepstate_gpio) {
+		gpio_set_value(sleepstate_gpio, 0);
+		pr_info("%s: PM_SUSPEND_PREPARE %d\n", __func__, sleepstate_gpio);
+	}
+#endif
+
 	error = enter_state(state);
+
+#ifdef CONFIG_BOARD_AILSA_II
+	if (-1 != sleepstate_gpio) {
+		gpio_set_value(sleepstate_gpio, 1);
+		pr_info("%s: PM_POST_SUSPEND %d\n", __func__, sleepstate_gpio);
+	}
+#endif
+
 	if (error) {
 		suspend_stats.fail++;
 		dpm_save_failed_errno(error);
