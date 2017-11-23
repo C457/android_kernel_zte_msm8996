@@ -1,0 +1,93 @@
+--- fs/pstore/ram.c
++++ fs/pstore/ram.c
+@@ -34,7 +34,10 @@
+ #include <linux/slab.h>
+ #include <linux/compiler.h>
+ #include <linux/pstore_ram.h>
+-
++#ifdef CONFIG_ZTE_RAM_CONSOLE
++#include <linux/of.h>
++#include <linux/of_address.h>
++#endif
+ #define RAMOOPS_KERNMSG_HDR "===="
+ #define MIN_MEM_SIZE 4096UL
+ 
+@@ -610,15 +622,78 @@ static int __exit ramoops_remove(struct platform_device *pdev)
+ 	return -EBUSY;
+ }
+ 
++#ifdef CONFIG_ZTE_RAM_CONSOLE
++static struct of_device_id ramoops_ids[] = {
++        {.compatible = "qcom,ramoops"},
++        {},
++};
++#endif
++
+ static struct platform_driver ramoops_driver = {
+ 	.probe		= ramoops_probe,
+ 	.remove		= __exit_p(ramoops_remove),
+ 	.driver		= {
+ 		.name	= "ramoops",
+ 		.owner	= THIS_MODULE,
++		.of_match_table = ramoops_ids,
+ 	},
+ };
+ 
++#ifdef CONFIG_ZTE_RAM_CONSOLE
++int zte_get_ramoops_paraments(struct platform_device *pdev)
++{
++
++  struct ramoops_platform_data *pdata = pdev->dev.platform_data;
++  struct device_node *node = pdev->dev.of_node;
++  int ret = 0;
++  const __be32 *cell;
++  int len = 0;
++  int i = 0;
++
++  ret = of_property_read_u32(node, "mem_type",
++                               &pdata->mem_type);
++  if (ret) {
++        dev_err(&pdev->dev, "Failed to find mem_type.\n");
++                        return ret;
++  }
++
++  ret = of_property_read_u32(node, "dump_oops",
++                               &pdata->dump_oops);
++  if (ret) {
++        dev_err(&pdev->dev, "Failed to find record_size.\n");
++                        return ret;
++  }
++
++  cell = of_get_property(node, "size", &len);
++  if (!cell || len < 4*sizeof(u64)) {
++        pr_err("ramoops: cannot find property\n");
++        return -EINVAL;
++  }
++
++  if ((len % sizeof(u64))) {
++        pr_err("ramoops: unexpected number of memory size\n");
++        return -EINVAL;
++  }
++
++  for( i= 0; i < (len / sizeof(u64)); ++i) {
++                /*
++                 * of_read_number always returns a 64-bit number.
++                 * But we can truncate it on a 32-bit system.
++                 */
++                if (i == 0)
++                        pdata->console_size = (phys_addr_t)of_read_number(cell, 2);
++                if (i == 1)
++                        pdata->record_size = (phys_addr_t)of_read_number(cell, 2);
++                if (i == 2)
++                        pdata->ftrace_size = (phys_addr_t)of_read_number(cell, 2);
++                if (i == 3)
++                        pdata->pmsg_size = (phys_addr_t)of_read_number(cell, 2);
++                cell += 2;
++}
++
++  return 0;
++}
++#else
+ static void ramoops_register_dummy(void)
+ {
+ 	if (!mem_size)

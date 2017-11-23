@@ -283,8 +283,11 @@ static int synaptics_rmi4_video_init(struct synaptics_rmi4_data *rmi4_data)
 	return 0;
 
 exit_sysfs_attrs:
-	for (attr_count--; attr_count >= 0; attr_count--)
+	for (attr_count--; attr_count >= 0; attr_count--) {
 		sysfs_remove_file(video->sysfs_dir, &attrs[attr_count].attr);
+		if (attr_count == 0)
+			break;
+	}
 
 	kobject_put(video->sysfs_dir);
 

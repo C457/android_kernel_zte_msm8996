@@ -83,6 +83,10 @@ MODULE_PARM_DESC(ramoops_ecc,
 		"ECC buffer size in bytes (1 is a special value, means 16 "
 		"bytes ECC)");
 
+#ifdef CONFIG_ZTE_RAM_CONSOLE
+int zte_get_ramoops_paraments(struct platform_device *pdev);
+#endif
+
 struct ramoops_context {
 	struct persistent_ram_zone **przs;
 	struct persistent_ram_zone *cprz;
@@ -450,7 +454,9 @@ static int ramoops_init_prz(struct device *dev, struct ramoops_context *cxt,
 		return err;
 	}
 
+#ifndef CONFIG_ZTE_RAM_CONSOLE
 	persistent_ram_zap(*prz);
+#endif
 
 	*paddr += sz;
 
@@ -548,6 +554,9 @@ static int ramoops_probe(struct platform_device *pdev)
 	if (pdev->dev.of_node)
 		ramoops_of_init(pdev);
 
+#ifdef CONFIG_ZTE_RAM_CONSOLE
+	zte_get_ramoops_paraments(pdev);
+#endif
 	/* Only a single ramoops area allowed at a time, so fail extra
 	 * probes.
 	 */
@@ -725,10 +734,14 @@ static void ramoops_register_dummy(void)
 			PTR_ERR(dummy));
 	}
 }
+#endif
 
 static int __init ramoops_init(void)
 {
+
+#ifndef CONFIG_ZTE_RAM_CONSOLE
 	ramoops_register_dummy();
+#endif
 	return platform_driver_register(&ramoops_driver);
 }
 postcore_initcall(ramoops_init);
@@ -740,6 +753,67 @@ static void __exit ramoops_exit(void)
 	kfree(dummy_data);
 }
 module_exit(ramoops_exit);
+
+
+#if defined(CONFIG_ZTE_RAM_CONSOLE)&& defined(CONFIG_OF_RESERVED_MEM)
+#include <linux/of.h>
+#include <linux/of_fdt.h>
+#include <linux/of_reserved_mem.h>
+
+static int rmem_ramoops_device_init(struct reserved_mem *rmem, struct device *dev)
+{
+        struct ramoops_platform_data *ramoops_pdata;
+        struct platform_device *pdev;
+	int ret = -1;
+
+        pr_info("%s e\n",__FUNCTION__);
+
+        if (!rmem->size || !rmem->base){
+                pr_err("reserved memory size is 0\n");
+                return -EINVAL;
+	}
+
+
+        ramoops_pdata =(struct ramoops_platform_data *)kzalloc(sizeof(struct ramoops_platform_data), GFP_KERNEL);
+
+        if (!ramoops_pdata) {
+                pr_err("could not allocate pdata\n");
+                return -ENOMEM;
+        }
+
+        ramoops_pdata->mem_size = rmem->size;
+        ramoops_pdata->mem_address = rmem->base;
+
+	pdev = container_of(dev,struct platform_device, dev);
+	ret = platform_device_add_data(pdev,(const void *)ramoops_pdata,sizeof(struct ramoops_platform_data));
+	if (ret){
+                pr_err("failed to add data to device\n");
+                return -EINVAL;
+	}
+        pr_info("%s x\n",__FUNCTION__);
+	return 0;
+}
+
+static void rmem_ramoops_device_release(struct reserved_mem *rmem,
+                                    struct device *dev)
+{
+        pr_info("%s e\n",__FUNCTION__);
+}
+
+static const struct reserved_mem_ops removed_ramoops_ops = {
+        .device_init    = rmem_ramoops_device_init,
+        .device_release = rmem_ramoops_device_release,
+};
+
+static int __init removed_ramoops_setup(struct reserved_mem *rmem)
+{
+        rmem->ops = &removed_ramoops_ops;
+        pr_info("Removed memory: created ramoops memory pool at %pa, size %ld MiB\n",
+                &rmem->base, (unsigned long)rmem->size / SZ_1M);
+        return 0;
+}
+RESERVEDMEM_OF_DECLARE(dma, "removed_ramoops_memory", removed_ramoops_setup);
+#endif
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Marco Stornelli <marco.stornelli@gmail.com>");

@@ -404,6 +404,15 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 	return error;
 }
 
+/*zte_pm ++++ */
+#ifndef RECORD_APP_AWAKE_SUSPEND_TIME_ZTE
+#define RECORD_APP_AWAKE_SUSPEND_TIME_ZTE
+#endif
+#ifdef RECORD_APP_AWAKE_SUSPEND_TIME_ZTE
+extern void record_sleep_awake_time(bool record_sleep_awake);
+#endif
+/*zte_pm ---- */
+
 /**
  * suspend_devices_and_enter - Suspend devices and enter system sleep state.
  * @state: System sleep state to enter.
@@ -439,6 +448,14 @@ int suspend_devices_and_enter(suspend_state_t state)
  Resume_devices:
 	suspend_test_start();
 	dpm_resume_end(PMSG_RESUME);
+
+/*zte_pm ++++ */
+#ifdef RECORD_APP_AWAKE_SUSPEND_TIME_ZTE
+	pr_info("Resume DONE\n");
+	record_sleep_awake_time(false);
+#endif
+/*zte_pm ---- */
+
 	suspend_test_finish("resume devices");
 	trace_suspend_resume(TPS("resume_console"), state, true);
 	resume_console();

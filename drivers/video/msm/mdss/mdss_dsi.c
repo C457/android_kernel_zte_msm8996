@@ -295,6 +295,8 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 	if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
 		pr_debug("reset disable: pinctrl not enabled\n");
 
+	mdss_dsi_panel_3v_power(pdata, 0);
+
 	ret = msm_dss_enable_vreg(
 		ctrl_pdata->panel_power_data.vreg_config,
 		ctrl_pdata->panel_power_data.num_vreg, 0);
@@ -327,6 +329,8 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 			__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
 		return ret;
 	}
+
+	mdss_dsi_panel_3v_power(pdata, 1);
 
 	/*
 	 * If continuous splash screen feature is enabled, then we need to
@@ -1295,7 +1299,7 @@ panel_power_ctrl:
 	/* Initialize Max Packet size for DCS reads */
 	ctrl_pdata->cur_max_pkt_size = 0;
 end:
-	pr_debug("%s-:\n", __func__);
+	printk("%s-:\n", __func__);
 
 	return ret;
 }
@@ -1510,7 +1514,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 				  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_OFF);
 
 end:
-	pr_debug("%s-:\n", __func__);
+	printk("LCD %s-:\n", __func__);
 	return ret;
 }
 
@@ -1635,6 +1639,11 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 		mdss_dsi_set_tear_on(ctrl_pdata);
 	}
 
+	/*zte,esd interrupt mode 0205  start */
+	if (mdss_dsi_is_gpio_interrupt_esd(ctrl_pdata))
+		enable_irq(gpio_to_irq(ctrl_pdata->lcd_esd_interrupt_gpio));
+	/*zte,esd interrupt mode 0205  end */
+
 	ctrl_pdata->ctrl_state |= CTRL_STATE_PANEL_INIT;
 
 error:
@@ -1704,6 +1713,11 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata, int power_state)
 		mipi->vsync_enable && mipi->hw_vsync_mode) {
 		mdss_dsi_set_tear_off(ctrl_pdata);
 	}
+
+	/*zte,esd interrupt mode 0205  start */
+	if (mdss_dsi_is_gpio_interrupt_esd(ctrl_pdata))
+		disable_irq(gpio_to_irq(ctrl_pdata->lcd_esd_interrupt_gpio));
+	/*zte,esd interrupt mode 0205  end */
 
 	if (ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_INIT) {
 		if (!pdata->panel_info.dynamic_switch_pending) {
@@ -2823,6 +2837,7 @@ static struct device_node *mdss_dsi_pref_prim_panel(
  *
  * returns pointer to panel node on success, NULL on error.
  */
+extern u32 panel_match_check;
 static struct device_node *mdss_dsi_find_panel_of_node(
 		struct platform_device *pdev, char *panel_cfg)
 {
@@ -2929,8 +2944,10 @@ static struct device_node *mdss_dsi_find_panel_of_node(
 		return dsi_pan_node;
 	}
 end:
-	if (strcmp(panel_name, NONE_PANEL))
+	if (strcmp(panel_name, NONE_PANEL)) {
+		panel_match_check = 1;
 		dsi_pan_node = mdss_dsi_pref_prim_panel(pdev);
+	}
 exit:
 	return dsi_pan_node;
 }
@@ -3326,6 +3343,19 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		goto error_shadow_clk_deinit;
 	}
 
+	/*zte,esd interrupt mode 0205  start */
+	if (mdss_dsi_is_gpio_interrupt_esd(ctrl_pdata)) {
+		rc = devm_request_irq(&pdev->dev,
+			gpio_to_irq(ctrl_pdata->lcd_esd_interrupt_gpio),
+			esd_gpio_interrupt_handler, IRQF_TRIGGER_RISING,
+			"ESD_GPIO_INTERRUPT", ctrl_pdata);
+		if (rc)
+			pr_err("LCD ESD GPIO INTERRUPT request_irq failed.\n");
+
+		disable_irq(gpio_to_irq(ctrl_pdata->lcd_esd_interrupt_gpio));
+	}
+	/*zte,esd interrupt mode 0205  end */
+
 	ctrl_pdata->workq = create_workqueue("mdss_dsi_dba");
 	if (!ctrl_pdata->workq) {
 		pr_err("%s: Error creating workqueue\n", __func__);
@@ -3366,7 +3396,6 @@ static int mdss_dsi_bus_scale_init(struct platform_device *pdev,
 		pr_err("%s: msm_bus_cl_get_pdata() failed, rc=%d\n", __func__,
 								     rc);
 		return rc;
-		sdata->bus_scale_table = NULL;
 	}
 
 	sdata->bus_handle =
@@ -4101,6 +4130,16 @@ static int mdss_dsi_parse_gpio_params(struct platform_device *ctrl_pdev,
 		pr_err("%s:%d, reset gpio not specified\n",
 						__func__, __LINE__);
 
+#ifdef CONFIG_BOARD_FUJISAN
+	ctrl_pdata->rst2_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+			"qcom,platform-reset2-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->rst2_gpio))
+		pr_err("%s:%d, reset 2 gpio not specified\n",
+						__func__, __LINE__);
+	pr_info("%s:ctrl_pdata->ndx=%d ctrl_pdata->rst_gpio=%d ctrl_pdata->rst2_gpio=%d\n",
+						__func__, ctrl_pdata->ndx, ctrl_pdata->rst_gpio, ctrl_pdata->rst2_gpio);
+#endif
+
 	if (pinfo->mode_gpio_state != MODE_GPIO_NOT_VALID) {
 
 		ctrl_pdata->mode_gpio = of_get_named_gpio(
@@ -4203,6 +4242,77 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 	pinfo->panel_max_fps = mdss_panel_get_framerate(pinfo,
 				FPS_RESOLUTION_HZ);
 	pinfo->panel_max_vtotal = mdss_panel_get_vtotal(pinfo);
+	ctrl_pdata->lcd_3v_vsp_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+		"zte,lcd-3v-vsp-enable-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->lcd_3v_vsp_en_gpio)) {
+		pr_err("%s:%d, qcom,lcd-3v-vsp-enable-gpio not specified\n",
+						__func__, __LINE__);
+	} else {
+		printk("LCD %s:, qcom,lcd-3v-vsp-enable-gpio found!\n",__func__);
+		rc = gpio_request(ctrl_pdata->lcd_3v_vsp_en_gpio, "lcd_3v_vsp_en_gpio");
+		if (rc) {
+			pr_err("request lcd_3v_vsp_en_gpio failed, rc=%d\n",
+			       rc);
+		}
+	}
+
+#ifdef CONFIG_BOARD_FUJISAN
+	ctrl_pdata->lcd_5v_vsp_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+		"zte,lcd-5v-vsp-enable-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->lcd_5v_vsp_en_gpio)) {
+		pr_err("%s:%d, qcom,lcd-5v-vsp-enable-gpio not specified\n",
+						__func__, __LINE__);
+	} else {
+		pr_info("LCD %s:, qcom,lcd-5v-vsp-enable-gpio found!\n", __func__);
+		rc = gpio_request(ctrl_pdata->lcd_5v_vsp_en_gpio, "lcd_5v_vsp_en_gpio");
+		if (rc) {
+			pr_err("%s: request lcd_5v_vsp_en_gpio failed, rc=%d\n",
+			       __func__, rc);
+		}
+	}
+
+	ctrl_pdata->lcd_5v_vsn_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+		"zte,lcd-5v-vsn-enable-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->lcd_5v_vsn_en_gpio)) {
+		pr_err("%s:%d, qcom,lcd-5v-vsn-enable-gpio not specified\n",
+						__func__, __LINE__);
+	} else {
+		pr_info("LCD %s: qcom,lcd-5v-vsn-enable-gpio found!\n", __func__);
+		rc = gpio_request(ctrl_pdata->lcd_5v_vsn_en_gpio, "lcd_5v_vsn_en_gpio");
+		if (rc) {
+			pr_err("%s: request lcd_5v_vsn_en_gpio failed, rc=%d\n",
+			       __func__, rc);
+		}
+	}
+
+	ctrl_pdata->lcd_2p8_reg = regulator_get(&(ctrl_pdev->dev), "lcd_2p8");
+	if (IS_ERR(ctrl_pdata->lcd_2p8_reg)) {
+		pr_err("%s: regulator_get lcd_2p8 failed, rc=%d\n", __func__, rc);
+		regulator_put(ctrl_pdata->lcd_2p8_reg);
+		ctrl_pdata->lcd_2p8_reg = NULL;
+	}
+
+	ctrl_pdata->lcd2_2p8_reg = regulator_get(&(ctrl_pdev->dev), "lcd2_2p8");
+	if (IS_ERR(ctrl_pdata->lcd2_2p8_reg)) {
+		pr_err("%s: regulator_get lcd2_2p8 failed, rc=%d\n", __func__, rc);
+		regulator_put(ctrl_pdata->lcd2_2p8_reg);
+		ctrl_pdata->lcd2_2p8_reg = NULL;
+	}
+
+	ctrl_pdata->lcd2_5v_vsp_reg = regulator_get(&(ctrl_pdev->dev), "lcd2_5v_vsp");
+	if (IS_ERR(ctrl_pdata->lcd2_5v_vsp_reg)) {
+		pr_err("%s: regulator_get lcd2_5v_vsp_reg failed, rc=%d\n", __func__, rc);
+		regulator_put(ctrl_pdata->lcd2_5v_vsp_reg);
+		ctrl_pdata->lcd2_5v_vsp_reg = NULL;
+	}
+
+	ctrl_pdata->lcd2_5v_vsn_reg = regulator_get(&(ctrl_pdev->dev), "lcd2_5v_vsn");
+	if (IS_ERR(ctrl_pdata->lcd2_5v_vsn_reg)) {
+		pr_err("%s: regulator_get lcd2_5v_vsn_reg failed, rc=%d\n", __func__, rc);
+		regulator_put(ctrl_pdata->lcd2_5v_vsn_reg);
+		ctrl_pdata->lcd2_5v_vsn_reg = NULL;
+	}
+#endif
 
 	rc = mdss_dsi_parse_gpio_params(ctrl_pdev, ctrl_pdata);
 	if (rc) {

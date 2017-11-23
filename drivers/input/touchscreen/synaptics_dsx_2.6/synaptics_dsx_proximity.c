@@ -564,6 +564,8 @@ exit_free_sysfs:
 	for (attr_count--; attr_count >= 0; attr_count--) {
 		sysfs_remove_file(&rmi4_data->input_dev->dev.kobj,
 				&attrs[attr_count].attr);
+		if (attr_count == 0)
+			break;
 	}
 
 	input_unregister_device(prox->prox_dev);

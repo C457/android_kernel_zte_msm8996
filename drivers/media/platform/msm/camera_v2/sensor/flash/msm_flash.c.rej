@@ -1,0 +1,10 @@
+--- drivers/media/platform/msm/camera_v2/sensor/flash/msm_flash.c
++++ drivers/media/platform/msm/camera_v2/sensor/flash/msm_flash.c
+@@ -738,6 +784,7 @@ static int32_t msm_flash_config(struct msm_flash_ctrl_t *flash_ctrl,
+ 		break;
+ 	case CFG_FLASH_LOW:
+ 		if ((flash_ctrl->flash_state == MSM_CAMERA_FLASH_OFF) ||
++			(flash_ctrl->flash_state == MSM_CAMERA_FLASH_LOW) ||
+ 			(flash_ctrl->flash_state == MSM_CAMERA_FLASH_INIT)) {
+ 			rc = flash_ctrl->func_tbl->camera_flash_low(
+ 				flash_ctrl, flash_data);
