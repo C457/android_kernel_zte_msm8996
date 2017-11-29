@@ -2837,7 +2837,6 @@ static struct device_node *mdss_dsi_pref_prim_panel(
  *
  * returns pointer to panel node on success, NULL on error.
  */
-extern u32 panel_match_check;
 static struct device_node *mdss_dsi_find_panel_of_node(
 		struct platform_device *pdev, char *panel_cfg)
 {
@@ -2944,10 +2943,8 @@ static struct device_node *mdss_dsi_find_panel_of_node(
 		return dsi_pan_node;
 	}
 end:
-	if (strcmp(panel_name, NONE_PANEL)) {
-		panel_match_check = 1;
+	if (strcmp(panel_name, NONE_PANEL))
 		dsi_pan_node = mdss_dsi_pref_prim_panel(pdev);
-	}
 exit:
 	return dsi_pan_node;
 }
