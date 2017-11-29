@@ -351,6 +351,7 @@ static void pid_not_display_oem_prefix(ushort *pid)
 			pr_debug("%s: 0x%x\n", __func__, product_id);
 			*pid = product_id;
 		}
+	}
 }
 
 /* Use Qualcomm's usb vid and pid if enters download due to panic. */
