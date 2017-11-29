@@ -56,6 +56,8 @@
 #include "mdss_mdp.h"
 #include "mdp3_ctrl.h"
 
+u32 zte_frame_count;/*pan*/
+
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MDSS_FB_NUM 3
 #else
