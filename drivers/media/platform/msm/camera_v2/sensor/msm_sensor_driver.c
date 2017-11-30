@@ -1230,11 +1230,6 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 	sensordata->power_info.ois_en_gpio = of_get_named_gpio(of_node,
 		"qcom,platform-ois-en-gpio", 0);
 	if (!gpio_is_valid(sensordata->power_info.ois_en_gpio))
-		pr_err("%s:%d, ois enable gpio not specified\n",__func__, __LINE__);
-
-	sensordata->power_info.ois_en_gpio = of_get_named_gpio(of_node,
-		"qcom,platform-ois-en-gpio", 0);
-	if (!gpio_is_valid(sensordata->power_info.ois_en_gpio))
 		pr_err("%s:%d, ois enable gpio not specified\n", __func__, __LINE__);
 
 	/* Get CCI master */
