@@ -576,7 +576,7 @@ static void ak49xx_bring_down(struct ak49xx *ak49xx)
 
 int ak49xx_power_test(struct ak49xx *ak49xx, int val)
 {
-	int ret;
+	int ret = 0;
 
 	pr_err("[LHS] %s line %d enter val =%d!\n", __func__, __LINE__, val);
 	if (val == 0) {
@@ -767,7 +767,7 @@ static void ak49xx_free_reset(struct ak49xx *ak49xx)
 
 static int ak49xx_device_init(struct ak49xx *ak49xx)
 {
-	int ret;
+	int ret = 0;
 	int num_irqs = 0;
 	int ak49xx_dev_size = 0;
 	struct mfd_cell *ak49xx_dev = NULL;

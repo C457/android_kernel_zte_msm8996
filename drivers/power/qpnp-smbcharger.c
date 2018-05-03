@@ -9159,7 +9159,7 @@ static int smbchg_probe(struct spmi_device *spmi)
 	struct qpnp_vadc_chip *vadc_dev = NULL, *vchg_vadc_dev = NULL;
 	const char *typec_psy_name;
 	u8 s3_src_reg;
-	u8 reg;
+	u8 reg = 0;
 
 	usb_psy = power_supply_get_by_name("usb");
 	if (!usb_psy) {

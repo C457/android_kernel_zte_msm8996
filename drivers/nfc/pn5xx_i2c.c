@@ -508,7 +508,7 @@ static const struct file_operations pn5xx_dev_fops = {
 
 static int pn5xx_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
-	int ret;
+	int ret = 0;
 	struct device_node *of_node = NULL;
 
 	NFC_DBG_MSG("start\n");

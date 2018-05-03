@@ -6078,7 +6078,7 @@ static irqreturn_t ak4961_rce_irq(int irq, void *data)
 {
 	struct ak4961_priv *priv = data;
 	struct snd_soc_codec *codec = priv->codec;
-	int val, mic_level;
+	int val, mic_level = 0;
 	int report;
 
 	val = snd_soc_read(codec, JACK_DETECTION_STATUS);

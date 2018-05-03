@@ -1216,7 +1216,7 @@ static int rgb_bh1745_probe(struct i2c_client *client,
 	const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
-	struct rgb_bh1745_data *data;
+	struct rgb_bh1745_data *data = NULL;
 	int err = 0;
 	int i = 0;
 

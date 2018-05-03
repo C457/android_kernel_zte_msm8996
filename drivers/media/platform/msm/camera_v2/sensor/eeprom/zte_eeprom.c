@@ -853,7 +853,7 @@ static int ov8856_read_eeprom_memory(struct msm_eeprom_ctrl_t *e_ctrl,
 	uint8_t *memptr = block->mapdata;
 	uint16_t  sensor_module_id = 0;
 	int32_t group_number;
-	uint32_t module_id_addr;
+	uint32_t module_id_addr = 0;
 	int i;
 
 	if (!e_ctrl) {
