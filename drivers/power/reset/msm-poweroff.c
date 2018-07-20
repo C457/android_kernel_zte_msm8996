@@ -200,6 +200,7 @@ static bool get_dload_mode(void)
 	return dload_mode_enabled;
 }
 
+#if 1
 static void enable_emergency_dload_mode(void)
 {
 	int ret;
@@ -224,6 +225,11 @@ static void enable_emergency_dload_mode(void)
 	if (ret)
 		pr_err("Failed to set secure EDLOAD mode: %d\n", ret);
 }
+#else
+static void enable_emergency_dload_mode(void)
+{
+}
+#endif
 
 static int dload_set(const char *val, struct kernel_param *kp)
 {
@@ -369,6 +375,11 @@ static void msm_restart_prepare(const char *cmd)
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_RTC);
 			__raw_writel(0x77665503, restart_reason);
+		} else if (!strcmp(cmd, "ftmmode")) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_FTMMODE);
+			__raw_writel(0x776655ee, restart_reason);
+
 		} else if (!strcmp(cmd, "dm-verity device corrupted")) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_DMVERITY_CORRUPTED);

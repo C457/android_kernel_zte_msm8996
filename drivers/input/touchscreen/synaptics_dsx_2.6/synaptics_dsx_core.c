@@ -50,9 +50,13 @@
 #include <linux/of_gpio.h>
 #include <linux/fb.h>
 
+#include <linux/timer.h>
+#include <linux/sched.h>
+
 #ifdef KERNEL_ABOVE_2_6_38
 #include <linux/input/mt.h>
 #endif
+#include "../ndt_stress.h"
 
 #define INPUT_PHYS_NAME "synaptics_dsx/touch_input"
 #define STYLUS_PHYS_NAME "synaptics_dsx/stylus"
@@ -139,6 +143,8 @@ static struct device *dev;
 static struct workqueue_struct *syna_rmi4_resume_wq;
 static struct work_struct	syna_rmi4_resume_work;
 static struct work_struct	syna_rmi4_suspend_work;
+static struct workqueue_struct	*timeout_func_wq;
+static struct work_struct	timeout_func_work;
 
 static int suspend_flag = 0;
 static DECLARE_WAIT_QUEUE_HEAD(suspend_wait);
@@ -182,7 +188,23 @@ static int touch_module;
 
 static bool syna_regulator_enable_flag = false;
 static bool hall_state = false;
+struct timer_list key_timer[MAX_NUMBER_OF_BUTTONS];
+static bool current_status[MAX_NUMBER_OF_BUTTONS];
+#ifdef NO_0D_WHILE_2D
+static bool before_2d_status[MAX_NUMBER_OF_BUTTONS];
+static bool while_2d_status[MAX_NUMBER_OF_BUTTONS];
+#endif
 static bool syna_wake_gesture_flag = false;
+
+#ifdef CONFIG_FORCE_TOUCH_NDT
+extern int ndt_stress_set_vlaue(unsigned short x1, unsigned short y1, unsigned char status);
+extern int ndt_stress_get_vlaue(unsigned int *value);
+extern int ndt_stress_suspend(void);
+extern int ndt_stress_resume(void);
+extern void ndt_i2c_comm_lock(void);
+extern void ndt_i2c_comm_unlock(void);
+#endif
+
 extern bool bootloader_mode;
 
 extern  int fwu_get_device_config_id(void);
@@ -1248,6 +1270,12 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #endif
 #endif
 
+/*ergate*/
+#ifdef CONFIG_FORCE_TOUCH_NDT
+	int z;
+	int ret;
+	static unsigned int irq_count;
+#endif
 	struct synaptics_rmi4_f12_extra_data *extra_data;
 	struct synaptics_rmi4_f12_finger_data *data;
 	struct synaptics_rmi4_f12_finger_data *finger_data;
@@ -1363,6 +1391,9 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 
 	mutex_lock(&(rmi4_data->rmi4_report_mutex));
 
+#ifdef CONFIG_FORCE_TOUCH_NDT
+	irq_count++;
+#endif
 	for (finger = 0; finger < fingers_to_process; finger++) {
 		finger_data = data + finger;
 		finger_status = finger_data->object_type_and_status;
@@ -1397,6 +1428,18 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		case F12_GLOVED_FINGER_STATUS:
 			if (stylus_presence) /* Stylus has priority over fingers */
 				break;
+#ifdef CONFIG_FORCE_TOUCH_NDT
+			if (touch_count == 0) { /*first point*/
+				ret = ndt_stress_set_vlaue(x, y, 1);
+				if (ret == 0)
+					ndt_stress_get_vlaue(&z);
+				else
+					z = wx;
+			} else
+				z = wx;
+#else
+			z = wx;
+#endif
 #ifdef TYPE_B_PROTOCOL
 			input_mt_slot(rmi4_data->input_dev, finger);
 			input_mt_report_slot_state(rmi4_data->input_dev,
@@ -1449,9 +1492,13 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			input_report_abs(rmi4_data->input_dev,
 					ABS_MT_PRESSURE, pressure);
 #endif
-
+#ifdef CONFIG_FORCE_TOUCH_NDT
+			input_report_abs(rmi4_data->input_dev,
+					ABS_MT_PRESSURE, z);
+#else
 			input_report_abs(rmi4_data->input_dev,
 					ABS_MT_PRESSURE, wx);
+#endif
 
 #ifndef TYPE_B_PROTOCOL
 			input_mt_sync(rmi4_data->input_dev);
@@ -1510,6 +1557,10 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		objects_already_present = 0;
 #endif
 
+#ifdef CONFIG_FORCE_TOUCH_NDT
+		ndt_stress_set_vlaue(0, 0, 0);
+		irq_count = 0;
+ #endif
 		input_report_key(rmi4_data->input_dev,
 				BTN_TOUCH, 0);
 		input_report_key(rmi4_data->input_dev,
@@ -1539,6 +1590,49 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 	return touch_count;
 }
 
+void key_timeout_reset(struct work_struct *work)
+{
+	unsigned char command = 0x01;
+	int retval;
+	int button;
+	const struct synaptics_dsx_board_data *bdata =
+			syn_ts->hw_if->board_data;
+
+	if (syn_ts) {
+		synaptics_rmi4_free_fingers(syn_ts);
+
+		memset(current_status, 0, sizeof(current_status));
+#ifdef NO_0D_WHILE_2D
+		memset(before_2d_status, 0, sizeof(before_2d_status));
+		memset(while_2d_status, 0, sizeof(while_2d_status));
+#endif
+
+		pr_notice("%s: reset device\n", __func__);
+		retval = synaptics_rmi4_reg_write(syn_ts,
+				syn_ts->f01_cmd_base_addr,
+				&command,
+				sizeof(command));
+		if (retval < 0)
+			dev_err(syn_ts->pdev->dev.parent,
+				"%s: faile to issue reset command\n",
+				__func__);
+
+		msleep(bdata->reset_delay_ms);
+
+		pr_notice("%s: reset end\n", __func__);
+	}
+
+	pr_notice("%s: delete timer\n", __func__);
+	for (button = 0; button < (MAX_NUMBER_OF_BUTTONS - 1); button++)
+		del_timer(&key_timer[button]);
+}
+
+void key_timeout_func(unsigned long data)
+{
+	pr_notice("%s: time out\n", __func__);
+	queue_work(timeout_func_wq, &timeout_func_work);
+}
+
 static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 		struct synaptics_rmi4_fn *fhandler)
 {
@@ -1550,14 +1644,10 @@ static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 	unsigned char shift;
 	unsigned char status;
 	unsigned char *data;
+	unsigned char touch_count = 0;
 	unsigned short data_addr = fhandler->full_addr.data_base;
 	struct synaptics_rmi4_f1a_handle *f1a = fhandler->data;
 	static unsigned char do_once = 1;
-	static bool current_status[MAX_NUMBER_OF_BUTTONS];
-#ifdef NO_0D_WHILE_2D
-	static bool before_2d_status[MAX_NUMBER_OF_BUTTONS];
-	static bool while_2d_status[MAX_NUMBER_OF_BUTTONS];
-#endif
 
 	if (do_once) {
 		memset(current_status, 0, sizeof(current_status));
@@ -1612,12 +1702,11 @@ static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 		}
 		y = 2744;
 
+		if (status)
+			mod_timer(&key_timer[button], jiffies + HZ * 30);
+		else
+			del_timer(&key_timer[button]);
 
-#ifdef TYPE_B_PROTOCOL
-		input_mt_slot(rmi4_data->input_dev, 0);
-		input_mt_report_slot_state(rmi4_data->input_dev,
-				MT_TOOL_FINGER, status != 0);
-#endif
 #ifdef NO_0D_WHILE_2D
 		if (rmi4_data->fingers_on_2d == false) {
 			if (status == 1) {
@@ -1630,8 +1719,13 @@ static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 					before_2d_status[button] = 0;
 				}
 			}
-
+			touch_count++;
 			if (status != 0) {
+#ifdef TYPE_B_PROTOCOL
+				input_mt_slot(rmi4_data->input_dev, 0);
+				input_mt_report_slot_state(rmi4_data->input_dev,
+					MT_TOOL_FINGER, status != 0);
+#endif
 				input_report_key(rmi4_data->input_dev,
 					BTN_TOUCH, 1);
 				input_report_key(rmi4_data->input_dev,
@@ -1642,11 +1736,38 @@ static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 					ABS_MT_POSITION_Y, y);
 				input_report_abs(rmi4_data->input_dev,
 					ABS_MT_PRESSURE, status);
+				pr_notice("%s: Button %d (code %d) ->%d, no 2d\n",
+					__func__, button,
+					f1a->button_map[button],
+					status);
+			} else {
+#ifdef TYPE_B_PROTOCOL
+				input_mt_slot(rmi4_data->input_dev, 0);
+				input_mt_report_slot_state(rmi4_data->input_dev,
+					MT_TOOL_FINGER, status != 0);
+#endif
+				input_report_key(rmi4_data->input_dev,
+					BTN_TOUCH, 0);
+				input_report_key(rmi4_data->input_dev,
+					BTN_TOOL_FINGER, 0);
+#ifndef TYPE_B_PROTOCOL
+				input_mt_sync(rmi4_data->input_dev);
+#endif
+				pr_notice("%s: Button %d (code %d) ->%d, no 2d\n",
+					__func__, button,
+					f1a->button_map[button],
+					status);
 			}
 		} else {
 			if (before_2d_status[button] == 1) {
 				before_2d_status[button] = 0;
-				if (status != 0)	{
+				touch_count++;
+				if (status != 0) {
+#ifdef TYPE_B_PROTOCOL
+					input_mt_slot(rmi4_data->input_dev, 0);
+					input_mt_report_slot_state(rmi4_data->input_dev,
+						MT_TOOL_FINGER, status != 0);
+#endif
 					input_report_key(rmi4_data->input_dev,
 						BTN_TOUCH, 1);
 					input_report_key(rmi4_data->input_dev,
@@ -1657,6 +1778,27 @@ static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 						ABS_MT_POSITION_Y, y);
 					input_report_abs(rmi4_data->input_dev,
 						ABS_MT_PRESSURE, status);
+					pr_notice("%s: Button %d (code %d) ->%d, 2d\n",
+						__func__, button,
+						f1a->button_map[button],
+						status);
+				} else {
+#ifdef TYPE_B_PROTOCOL
+					input_mt_slot(rmi4_data->input_dev, 0);
+					input_mt_report_slot_state(rmi4_data->input_dev,
+						MT_TOOL_FINGER, status != 0);
+#endif
+					input_report_key(rmi4_data->input_dev,
+						BTN_TOUCH, 0);
+					input_report_key(rmi4_data->input_dev,
+						BTN_TOOL_FINGER, 0);
+#ifndef TYPE_B_PROTOCOL
+					input_mt_sync(rmi4_data->input_dev);
+#endif
+					pr_notice("%s: Button %d (code %d) ->%d, 2d\n",
+						__func__, button,
+						f1a->button_map[button],
+						status);
 				}
 			} else {
 				if (status == 1)
@@ -1666,7 +1808,13 @@ static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 			}
 		}
 #else
+		touch_count++;
 		if (status != 0) {
+#ifdef TYPE_B_PROTOCOL
+			input_mt_slot(rmi4_data->input_dev, 0);
+			input_mt_report_slot_state(rmi4_data->input_dev,
+				MT_TOOL_FINGER, status != 0);
+#endif
 			input_report_key(rmi4_data->input_dev,
 				BTN_TOUCH, 1);
 			input_report_key(rmi4_data->input_dev,
@@ -1677,12 +1825,26 @@ static void synaptics_rmi4_f1a_report(struct synaptics_rmi4_data *rmi4_data,
 				ABS_MT_POSITION_Y, y);
 			input_report_abs(rmi4_data->input_dev,
 				ABS_MT_PRESSURE, status);
+		} else {
+#ifdef TYPE_B_PROTOCOL
+			input_mt_slot(rmi4_data->input_dev, 0);
+			input_mt_report_slot_state(rmi4_data->input_dev,
+				MT_TOOL_FINGER, status != 0);
+#endif
+			input_report_key(rmi4_data->input_dev,
+				BTN_TOUCH, 0);
+			input_report_key(rmi4_data->input_dev,
+				BTN_TOOL_FINGER, 0);
+#ifndef TYPE_B_PROTOCOL
+			input_mt_sync(rmi4_data->input_dev);
+#endif
 		}
 
 #endif
 	}
 
-	input_sync(rmi4_data->input_dev);
+	if (touch_count)
+		input_sync(rmi4_data->input_dev);
 
 	mutex_unlock(&(rmi4_data->rmi4_report_mutex));
 
@@ -3427,6 +3589,11 @@ static void synaptics_rmi4_set_params(struct synaptics_rmi4_data *rmi4_data)
 					  ABS_MT_PRESSURE, 0,
 					  FORCE_LEVEL_MAX, 0, 0);
 #endif
+#if defined(CONFIG_FORCE_TOUCH_NDT)
+	input_set_abs_params(rmi4_data->input_dev,
+			ABS_MT_PRESSURE, 0,
+			255, 0, 0);
+#endif
 
 #ifdef TYPE_B_PROTOCOL
 #ifdef KERNEL_ABOVE_3_6
@@ -3768,6 +3935,8 @@ exit:
 static int synaptics_rmi4_free_fingers(struct synaptics_rmi4_data *rmi4_data)
 {
 	unsigned char ii;
+
+	pr_notice("%s: free fingers\n", __func__);
 
 	mutex_lock(&(rmi4_data->rmi4_report_mutex));
 
@@ -4497,6 +4666,7 @@ static int synpatics_rmi4_pinctrl_select(struct synaptics_rmi4_data *rmi4_data,
 static int synaptics_rmi4_probe(struct platform_device *pdev)
 {
 	int retval;
+	int button;
 	unsigned char attr_count;
 	struct synaptics_rmi4_data *rmi4_data;
 	struct proc_dir_entry *dir, *refresh;
@@ -4718,6 +4888,17 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 	}
 	INIT_WORK(&syna_smart_cover_work, synaptics_rmi4_smart_cover_write_reg);
 
+	timeout_func_wq = create_singlethread_workqueue("timeout_func_wq");
+	if (!timeout_func_wq) {
+		pr_err("Could not create work queue timeout_func_wq: no memory");
+		retval = -ESRCH;
+		goto err_create_singlethread;
+	}
+	INIT_WORK(&timeout_func_work, key_timeout_reset);
+
+#ifdef CONFIG_USE_NDT_FORCE_TOUCH
+	ndt_get_max_coord(rmi4_data->sensor_max_x, rmi4_data->sensor_max_y);
+#endif
 	dir = proc_mkdir("touchscreen", NULL);
 	refresh = proc_create("ts_information", 0664, dir, &proc_ops);
 	if (refresh == NULL)
@@ -4741,6 +4922,13 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		pr_notice("proc_create forcetouch_vendor failed!\n");
 	else
 		pr_notice("proc_create forcetouch_vendor success!\n");
+
+	for (button = 0; button < (MAX_NUMBER_OF_BUTTONS - 1); button++) {
+		init_timer(&key_timer[button]);
+		key_timer[button].expires = jiffies + HZ * 30;
+		key_timer[button].data = 0;
+		key_timer[button].function = key_timeout_func;
+	}
 
 #ifdef FB_READY_RESET
 	rmi4_data->reset_workqueue =
@@ -5324,8 +5512,16 @@ static void synaptics_rmi4_suspend(struct work_struct *work)
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
 	const struct synaptics_dsx_board_data *bdata = rmi4_data->hw_if->board_data;
 	int ret;
+	int button;
 
 	pr_notice("%s: start!\n", __func__);
+
+/*ergate*/
+#ifdef CONFIG_FORCE_TOUCH_NDT
+	ret = ndt_stress_suspend();
+	if (ret < 0)
+		pr_notice("%s: NDT suspend failed!\n", __func__);
+#endif
 
 	if (rmi4_data->stay_awake || rmi4_data->suspend == true) {
 		suspend_flag = 1;
@@ -5333,6 +5529,10 @@ static void synaptics_rmi4_suspend(struct work_struct *work)
 		pr_notice("%s: do nothing and suspend end!\n", __func__);
 		return;
 	}
+
+	pr_notice("%s: delete timer\n", __func__);
+	for (button = 0; button < (MAX_NUMBER_OF_BUTTONS - 1); button++)
+		del_timer(&key_timer[button]);
 
 	if (rmi4_data->enable_wakeup_gesture) {
 		synaptics_rmi4_glove_mode_enable(rmi4_data, false);
@@ -5393,6 +5593,13 @@ static void synaptics_rmi4_resume(struct work_struct *work)
 	int ret;
 
 	pr_notice("%s: start!\n", __func__);
+
+/*ergate*/
+#ifdef CONFIG_FORCE_TOUCH_NDT
+	ret = ndt_stress_resume();
+	if (ret < 0)
+		pr_notice("%s: NDT resume failed!\n", __func__);
+#endif
 
 	if (rmi4_data->stay_awake || rmi4_data->suspend == false) {
 		pr_notice("%s: do nothing and end!\n", __func__);

@@ -1148,10 +1148,10 @@ static int ak4962_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	snd_soc_update_bits(codec, CDCMCLK_DIVIDER, 0xFF, MDV);
-	snd_soc_update_bits(codec, MSYNC5_BDV, 0xFF, BDV);
-	snd_soc_update_bits(codec, MSYNC5_SDV, 0xFF, SDV);
-	snd_soc_update_bits(codec, CLOCK_MODE_SELECT, 0x7F, CMF);
+	snd_soc_update_bits(codec, CDCMCLK_DIVIDER, 0xFF, 0x09);
+	snd_soc_update_bits(codec, MSYNC5_BDV, 0xFF, 0x27);
+	snd_soc_update_bits(codec, MSYNC5_SDV, 0xFF, 0x3F);
+	snd_soc_update_bits(codec, CLOCK_MODE_SELECT, 0x7F, 0x0A);
 
 	if (ak4962->dai[dai->id].rate == 192000) {
 		snd_soc_update_bits(codec, POWER_MANAGEMENT_7, 0x20, 0x20);

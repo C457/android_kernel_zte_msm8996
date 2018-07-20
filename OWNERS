@@ -1,0 +1,26 @@
+owners:
+- zhang.bo19@zte.com.cn
+matchers:
+- exact: include/net/ipv6.h
+  owners:
+  - li.kai77@zte.com.cn
+  - fu.bing@zte.com.cn
+- exact: include/linux/inet.h
+  owners:
+  - li.kai77@zte.com.cn
+  - fu.bing@zte.com.cn
+- exact: net/core/utils.c
+  owners:
+  - li.kai77@zte.com.cn
+  - fu.bing@zte.com.cn
+- regex: net/ipv6/.*
+  owners:
+  - li.kai77@zte.com.cn
+  - fu.bing@zte.com.cn
+- regex: net/ipv4/.*
+  owners:
+  - li.kai77@zte.com.cn
+  - fu.bing@zte.com.cn
+- regex: drivers/hallsensors/.*
+  owners:
+  - yang.chunni@zte.com.cn

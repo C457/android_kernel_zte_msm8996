@@ -392,7 +392,6 @@ static const struct file_operations msm_rpmheap_fops = {
 	.llseek   = no_llseek,
 };
 /* add add by ZTE show vdd_min and sleep clk ++++ */
-/*zte_pm: came from Qualcomm but crash here,need fix later*/
 void pm_show_rpm_stats(void)
 {
 	struct msm_rpmstats_private_data powerdebug = {0};
@@ -447,9 +446,7 @@ void pm_show_rpm_stats(void)
 		} else {
 			pr_info("count : last %llu now %llu\n enter vdd min failed\n", vmin_count, count);
 			debug_suspend_enabled();
-
-			/*zte_pm: came from Qualcomm but crash here,need fix later*/
-			/*pm_show_rpm_master_stat();*/
+			pm_show_rpm_master_stat();
 		}
 	} else {
 		pr_err("%s: ERROR could not get vdd_min count\n", __func__);

@@ -424,12 +424,10 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 	}
 	/* added by ZTE show wakeup irq---- */
 	/*added by ZTE show  show vdd_min and sleep clk++++*/
-	/*zte_pm: came from Qualcomm but crash here,need fix later*/
-	/*{
+	{
 		extern void pm_show_rpm_stats(void);
 		pm_show_rpm_stats();
 	}
-	*/
        /*added by ZTE  show vdd_min and sleep clk end*/
 }
 

@@ -40,6 +40,7 @@ enum fps_resolution {
 #define MDSS_DSI_RST_SEQ_LEN	10
 #ifdef CONFIG_BOARD_FUJISAN
 #define MDSS_DSI_BL_CALIB_LEN	256
+#define MDSS_DSI_HUE_NUM	256
 #endif
 /* worst case prefill lines for all chipsets including all vertical blank */
 #define MDSS_MDP_MAX_PREFILL_FETCH 25

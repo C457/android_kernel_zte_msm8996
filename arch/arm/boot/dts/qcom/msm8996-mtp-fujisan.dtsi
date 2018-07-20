@@ -698,31 +698,6 @@
 };
 
 &soc {
-	i2c@75ba000 {
-		synaptics@20 {
-			compatible = "synaptics,dsx-i2c";
-			reg = <0x20>;
-			interrupt-parent = <&tlmm>;
-			interrupts = <125 0x2008>;
-			vdd_ana-supply = <&pm8994_l14>;
-			vcc_i2c-supply= <&pm8994_l22>;
-			synaptics,pwr-reg-name = "vdd_ana";
-			synaptics,bus-reg-name = "vcc_i2c";
-			pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
-			pinctrl-0 = <&ts_active>;
-			pinctrl-1 = <&ts_suspend>;
-			synaptics,reset-gpio = <&tlmm 89 0x00>;
-			synaptics,irq-gpio = <&tlmm 125 0x2008>;
-			synaptics,irq-on-state = <0>;
-			synaptics,irq-flags = <0x2008>;
-			/* IRQF_ONESHOT | IRQF_TRIGGER_LOW */
-			synaptics,power-delay-ms = <100>;
-			synaptics,reset-delay-ms = <100>;
-			synaptics,reset-on-state = <0>;
-			synaptics,reset-active-ms = <20>;
-			synaptics,cap-button-codes = <158 102 187>;
-		};
-	};
 	goodix_gf3118@1 {
 			compatible = "goodix,fingerprint";
 			//reg = <0x1>;
@@ -733,20 +708,6 @@
 			goodix,gpio_reset = <&tlmm 39 0>;
 			goodix,gpio_id = <&tlmm 21 0>;
 			goodix,gpio_irq = <&tlmm 123 0>;
-	};
-	gen-vkeys {
-		compatible = "zte,gen-vkeys";
-		label = "synaptics_dsx";
-		zte,disp-maxy_px = <2560>;
-		zte,disp-maxy_mm = <1210>;
-		zte,disp-maxx_mm = <680>;
-		zte,x1=<205>;
-		zte,x2=<345>;
-		zte,x3=<485>;
-		zte,lcd_offset=<25>;
-		zte,y_max_offset=<150>;
-		zte,dx=<100>;
-		zte,key-codes = <158 102 187>;
 	};
 
 	gpio_keys {

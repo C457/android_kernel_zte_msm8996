@@ -19,9 +19,16 @@
  *
  * Written by Jia Jia <jia.jia@zte.com.cn>
  */
+#ifndef _SS_POLICYPROC_H_
+#define _SS_POLICYPROC_H_
 
 #include "policydb.h"
 
+/*
+ * Function Declaration
+ */
 int pp_preproc_policy(void **data, size_t *len);
 int pp_postproc_policy(void **data, size_t *len);
 int pp_postproc_av_perms(struct policydb *pol, u32 ssid, u32 tsid, u16 tclass, u32 *perms);
+
+#endif /* _SS_POLICYPROC_H_ */

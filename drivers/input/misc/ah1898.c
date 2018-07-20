@@ -28,6 +28,10 @@
 
 static int hall_status = 1;
 
+#if defined(CONFIG_BOARD_AILSA_II)
+extern void synaptics_rmi4_smart_cover(bool enable);
+#endif
+
 module_param(hall_status, int, 0644);
 
 struct ah1898_chip {
@@ -82,6 +86,11 @@ static void ah1898_work_func(struct work_struct *work)
 			hall_status = 0;
 		}
 		input_sync(ah1898_chip_data->input);
+
+/* used for touchscreen mode switching */
+#if defined(CONFIG_BOARD_AILSA_II)
+		synaptics_rmi4_smart_cover(!value);
+#endif
 	}
 	/*enable_irq(ah1898_chip_data->irq);*/
 }

@@ -102,7 +102,7 @@ void pm_show_rpm_master_stat(void)
 	struct msm_rpm_master_stats_private_data *prvdata = NULL;
 	char stats[RPM_MASTERS_BUF_LEN] = {0};
 	int master_cnt;
-	int count, j = 0;
+	int count = 0;
 	static DEFINE_MUTEX(msm_rpm_master_stats_mutex);
 	char *buf = NULL;
 
@@ -131,9 +131,9 @@ void pm_show_rpm_master_stat(void)
 		buf = stats;
 
 		if (pdata->version == 2) {
-			SNPRINTF(buf, count, "%s\n",
+			SNPRINTF(buf, count, "%s\t",
 					GET_MASTER_NAME(master_cnt, prvdata));
-
+			#if 0 /* just print the xo_count and numbershutdown for PM change */
 			record.shutdown_req = readq_relaxed(prvdata->reg_base +
 				(master_cnt * pdata->master_offset +
 				offsetof(struct msm_rpm_master_stats, shutdown_req)));
@@ -213,14 +213,14 @@ void pm_show_rpm_master_stat(void)
 			SNPRINTF(buf, count, "\t%s:0x%x\n",
 				GET_FIELD(record.last_wake_transition_duration),
 				record.last_wake_transition_duration);
-
+			#endif
 			record.xo_count =
 					readl_relaxed(prvdata->reg_base +
 					(master_cnt * pdata->master_offset +
 					offsetof(struct msm_rpm_master_stats,
 					xo_count)));
 
-			SNPRINTF(buf, count, "\t%s:0x%x\n",
+			SNPRINTF(buf, count, "\t%s:0x%x\t",
 				GET_FIELD(record.xo_count),
 				record.xo_count);
 
@@ -229,18 +229,17 @@ void pm_show_rpm_master_stat(void)
 						offsetof(struct msm_rpm_master_stats,
 						wakeup_reason)));
 
-			SNPRINTF(buf, count, "\t%s:0x%x\n",
+			SNPRINTF(buf, count, "\t%s:0x%x\t",
 				GET_FIELD(record.wakeup_reason),
 				record.wakeup_reason);
 
 			record.numshutdowns = readl_relaxed(prvdata->reg_base +
 				(master_cnt * pdata->master_offset +
 				 offsetof(struct msm_rpm_master_stats, numshutdowns)));
-
-			SNPRINTF(buf, count, "\t%s:0x%x\n",
+			SNPRINTF(buf, count, "\t%s:0x%x\t",
 				GET_FIELD(record.numshutdowns),
 				record.numshutdowns);
-
+			#if 0 /* just print the xo_count and numbershutdown for PM change */
 			record.active_cores = readl_relaxed(prvdata->reg_base +
 				(master_cnt * pdata->master_offset) +
 				offsetof(struct msm_rpm_master_stats, active_cores));
@@ -248,6 +247,7 @@ void pm_show_rpm_master_stat(void)
 			SNPRINTF(buf, count, "\t%s:0x%x\n",
 				GET_FIELD(record.active_cores),
 				record.active_cores);
+			#endif
 		} else {
 			SNPRINTF(buf, count, "%s\n",
 					GET_MASTER_NAME(master_cnt, prvdata));
@@ -266,7 +266,7 @@ void pm_show_rpm_master_stat(void)
 				GET_FIELD(record.active_cores),
 				record.active_cores);
 		}
-
+		#if 0 /* just print the xo_count and numbershutdown for PM change */
 		j = find_first_bit((unsigned long *)&record.active_cores,
 								BITS_PER_LONG);
 		while (j < BITS_PER_LONG) {
@@ -274,6 +274,7 @@ void pm_show_rpm_master_stat(void)
 			j = find_next_bit((unsigned long *)&record.active_cores,
 					BITS_PER_LONG, j + 1);
 		}
+		#endif
 		pr_info("%s\n", stats);
 	}
 	mutex_unlock(&msm_rpm_master_stats_mutex);
@@ -637,7 +638,7 @@ static  int msm_rpm_master_stats_probe(struct platform_device *pdev)
 								__func__);
 		return -ENOMEM;
 	}
-
+	rpm_master_data = pdata;
 	platform_set_drvdata(pdev, dent);
 	return 0;
 }

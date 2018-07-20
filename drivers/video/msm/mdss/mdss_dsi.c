@@ -45,6 +45,12 @@ static struct mdss_dsi_data *mdss_dsi_res;
 
 static struct pm_qos_request mdss_dsi_pm_qos_request;
 
+#ifdef CONFIG_BOARD_FUJISAN
+char zte_ts_is_td4322(void);
+static int is_need_enable_labibb = false;
+int msm_dss_enable_vreg_labibb(struct dss_vreg *in_vreg, int num_vreg, int enable, int need_labibb);
+#endif
+
 static void mdss_dsi_pm_qos_add_request(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	struct irq_info *irq_info;
@@ -321,6 +327,45 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
+#ifdef CONFIG_BOARD_FUJISAN
+	if (!zte_ts_is_td4322()) {
+		pr_info("%s: !zte_ts_is_td4322()\n", __func__);
+		ret = msm_dss_enable_vreg(
+			ctrl_pdata->panel_power_data.vreg_config,
+			ctrl_pdata->panel_power_data.num_vreg, 1);
+		if (ret) {
+			pr_err("%s: failed to enable vregs for %s\n",
+				__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+			return ret;
+		}
+
+		mdss_dsi_panel_3v_power(pdata, 1); /*zte*/
+	} else {
+		is_need_enable_labibb = false;
+		if (ctrl_pdata->ndx == DSI_CTRL_RIGHT || pdata->panel_info.cont_splash_enabled) {
+			pr_info("%s: zte_ts_is_td4322() msm_dss_enable_vreg\n", __func__);
+			ret = msm_dss_enable_vreg(
+				ctrl_pdata->panel_power_data.vreg_config,
+				ctrl_pdata->panel_power_data.num_vreg, 1);
+			if (ret) {
+				pr_err("%s: failed to enable vregs for %s\n",
+					__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+				return ret;
+			}
+		} else {
+			pr_info("%s: zte_ts_is_td4322() no msm_dss_enable_vreg_labibb\n", __func__);
+			ret = msm_dss_enable_vreg_labibb(
+				ctrl_pdata->panel_power_data.vreg_config,
+				ctrl_pdata->panel_power_data.num_vreg, 1, 0);
+			if (ret) {
+				pr_err("%s: failed to enable vregs_labibb for %s\n",
+					__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+				return ret;
+			}
+			is_need_enable_labibb = true;
+		}
+	}
+#else
 	ret = msm_dss_enable_vreg(
 		ctrl_pdata->panel_power_data.vreg_config,
 		ctrl_pdata->panel_power_data.num_vreg, 1);
@@ -331,6 +376,7 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	}
 
 	mdss_dsi_panel_3v_power(pdata, 1);
+#endif
 
 	/*
 	 * If continuous splash screen feature is enabled, then we need to
@@ -1496,6 +1542,27 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 			pr_debug("reset enable: pinctrl not enabled\n");
 		mdss_dsi_panel_reset(pdata, 1);
 	}
+
+#ifdef CONFIG_BOARD_FUJISAN
+	if (zte_ts_is_td4322()) {
+		pr_info("%s: zte_ts_is_td4322() is_need_enable_labibb=%d\n",
+					__func__, is_need_enable_labibb);
+
+		mdss_dsi_panel_3v_power(pdata, 1);/*zte*/
+
+		if (is_need_enable_labibb) {
+			ret = msm_dss_enable_vreg_labibb(
+				ctrl_pdata->panel_power_data.vreg_config,
+				ctrl_pdata->panel_power_data.num_vreg, 1, 1);
+			if (ret) {
+				pr_err("%s: failed to enable vregs_labibb for %s\n",
+					__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+				goto end;
+			}
+			is_need_enable_labibb = false;
+		}
+	}
+#endif
 
 	if (mipi->init_delay)
 		usleep_range(mipi->init_delay, mipi->init_delay);
@@ -3110,7 +3177,7 @@ static int mdss_dsi_cont_splash_config(struct mdss_panel_info *pinfo,
 	void *clk_handle;
 	int rc = 0;
 
-	if (pinfo->cont_splash_enabled) {
+	if (pinfo->cont_splash_enabled && ctrl_pdata->ndx != DSI_CTRL_RIGHT) {
 		rc = mdss_dsi_panel_power_ctrl(&(ctrl_pdata->panel_data),
 			MDSS_PANEL_POWER_ON);
 		if (rc) {
@@ -4312,6 +4379,14 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 		pr_err("%s: regulator_get lcd2_5v_vsn_reg failed, rc=%d\n", __func__, rc);
 		regulator_put(ctrl_pdata->lcd2_5v_vsn_reg);
 		ctrl_pdata->lcd2_5v_vsn_reg = NULL;
+	}
+
+	if (ctrl_pdata->ndx == DSI_CTRL_LEFT && ctrl_pdata->lcd_2p8_reg) {
+		if (regulator_enable(ctrl_pdata->lcd_2p8_reg) < 0) {
+			pr_err("%s: lcd_2p8_reg regulator_enable failed\n", __func__);
+		} else {
+			pr_info("%s: lcd_2p8_reg regulator_enable successfully\n", __func__);
+		}
 	}
 #endif
 

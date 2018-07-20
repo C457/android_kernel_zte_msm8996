@@ -26,6 +26,7 @@
 #include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/security.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
@@ -33,6 +34,7 @@
 #include <linux/vmalloc.h>
 
 #include "policyproc.h"
+#include "policyproc_inst.h"
 
 
 /*
@@ -252,6 +254,26 @@ typedef struct {
 	policy_bitmap_t attr_map;
 } __packed policy_typeattr_map_item_t;
 
+typedef struct {
+	uint32_t name_len;
+	char *name;
+	uint16_t datums;
+} __packed policy_appendix_types_t;
+
+typedef struct {
+	uint32_t name_len;
+	char *name;
+	uint32_t datums;
+} __packed policy_appendix_perms_t;
+
+typedef struct {
+	uint32_t cname_len;
+	char *cname;
+	uint16_t cdatums;
+	uint32_t perms_num;
+	policy_appendix_perms_t *perms;
+} __packed policy_appendix_classes_t;
+
 /*
  * Policy Layout Definition
  */
@@ -398,6 +420,13 @@ typedef struct {
 } __packed policy_typeattr_map_t;
 
 typedef struct {
+	uint32_t types_num;
+	policy_appendix_types_t *types_list;
+	uint32_t classes_num;
+	policy_appendix_classes_t *classes_list;
+} __packed policy_appendix_t;
+
+typedef struct {
 	uint32_t magic;
 	uint32_t target_str_len;
 	char *target_str;
@@ -424,59 +453,8 @@ typedef struct {
 	policy_genfs_t genfs;
 	policy_range_t range;
 	policy_typeattr_map_t typeattr_map;
+	policy_appendix_t appx;
 } __packed policy_db_t;
-
-/*
- * Policy Description Definition
- */
-typedef enum {
-	PERM_SU = 0,
-} pp_perm_desc_item_t;
-
-typedef enum {
-	/* Policy Group 1 */
-	AVC_ADBD_SELF                 = 0,
-	AVC_ADBD_SU                   = 1,
-	/* Policy Group 2 */
-	AVC_ADBD_KERNEL               = 2,
-	AVC_ADBD_SELINUXFS            = 3,
-	/* Policy Group 3 */
-	AVC_GETLOG_DEBUGFS            = 4,
-	AVC_GETLOG_PROPERTIES_SERIAL  = 5,
-	AVC_GETLOG_SELF               = 6,
-	/* Policy Group 4 */
-	AVC_SDLOG_DEFAULT_PROP        = 7,
-	AVC_SDLOG_PERSIST_DPM_PROP    = 8,
-	AVC_SDLOG_PROPERTIES_SERIAL   = 9,
-	AVC_SDLOG_RADIO_PROP          = 10,
-	AVC_SDLOG_SYSTEM_FILE         = 11,
-	/* Policy Group 5 */
-	AVC_SU_TEE_DEV_CHR_FILE       = 12,
-	/* Policy Group 6 */
-	AVC_VOLD_KERNEL               = 13,
-	AVC_VOLD_SELINUXFS            = 14,
-} pp_avc_desc_item_t;
-
-typedef enum {
-	OP_NEW   = 1U << 0,  /* new operation */
-	OP_DEL   = 1U << 1,  /* delete operation */
-	OP_MOD   = 1U << 2,  /* modify operation */
-	OP_UNMOD = 1U << 3,  /* unmodify operation */
-} pp_desc_op_t;
-
-typedef struct {
-	const char *sid;
-	pp_desc_op_t op;
-} pp_perm_desc_t;
-
-typedef struct {
-	const char *stype;
-	const char *ttype;
-	const char *tclass;
-	uint16_t specified;
-	const char *perm;
-	pp_desc_op_t op;
-} pp_avc_desc_t;
 
 
 /*
@@ -485,195 +463,8 @@ typedef struct {
 /*
  * Misc Variable Definition
  */
-static uint32_t pp_version_num;
-
-/*
- * Policy Instruction Definition
- */
-static pp_perm_desc_t pp_perm_desc_list[] = {
-	/* permissive policy: permissive su */
-	[PERM_SU] = {
-		.sid = "su",
-		.op  = OP_NEW | OP_DEL,
-	},
-};
-
-static pp_avc_desc_t pp_avc_desc_list[] = {
-	/*
-	 * Policy Group 1
-	 * Purpose: allow adbd to root device
-	 */
-	/* avc policy: allow adbd self:process setcurrent */
-	[AVC_ADBD_SELF] = {
-		.stype     = "adbd",
-		.ttype     = "adbd",
-		.tclass    = "process",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "setcurrent",
-		.op        = OP_MOD | OP_UNMOD,
-	},
-
-	/* avc policy: allow adbd su:process dyntransition */
-	[AVC_ADBD_SU] = {
-		.stype     = "adbd",
-		.ttype     = "su",
-		.tclass    = "process",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "dyntransition",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/*
-	 * Policy Group 2
-	 * Purpose: allow adbd to setenforce
-	 * Running: adb shell "echo 0 > /sys/fs/selinux/enforce"
-	 */
-	/* avc policy: allow adbd kernel:security setenforce */
-	[AVC_ADBD_KERNEL] = {
-		.stype     = "adbd",
-		.ttype     = "kernel",
-		.tclass    = "security",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "setenforce",
-		.op        = OP_MOD | OP_UNMOD,
-	},
-
-	/* avc policy: allow adbd selinuxfs:file write */
-	[AVC_ADBD_SELINUXFS] = {
-		.stype     = "adbd",
-		.ttype     = "selinuxfs",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "write",
-		.op        = OP_MOD | OP_UNMOD,
-	},
-
-	/*
-	 * Policy Group 3
-	 * Purpose: allow getlogtofile to perform operation
-	 */
-	/* avc policy: allow getlog debugfs:filesystem mount */
-	[AVC_GETLOG_DEBUGFS] = {
-		.stype     = "getlog",
-		.ttype     = "debugfs",
-		.tclass    = "filesystem",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "mount",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/* avc policy: allow getlog properties_serial:file execute */
-	[AVC_GETLOG_PROPERTIES_SERIAL] = {
-		.stype     = "getlog",
-		.ttype     = "properties_serial",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "execute",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/* avc policy: allow getlog self:capability sys_ptrace */
-	[AVC_GETLOG_SELF] = {
-		.stype     = "getlog",
-		.ttype     = "getlog",
-		.tclass    = "capability",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "sys_ptrace",
-		.op        = OP_MOD | OP_UNMOD,
-	},
-
-	/*
-	 * Policy Group 4
-	 * Purpose: allow sdlog to perform operation
-	 */
-	/* avc policy: allow sdlog default_prop:file execute */
-	[AVC_SDLOG_DEFAULT_PROP] = {
-		.stype     = "sdlog",
-		.ttype     = "default_prop",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "execute",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/* avc policy: allow sdlog persist_dpm_prop:file execute */
-	[AVC_SDLOG_PERSIST_DPM_PROP] = {
-		.stype     = "sdlog",
-		.ttype     = "persist_dpm_prop",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "execute",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/* avc policy: allow sdlog properties_serial:file execute */
-	[AVC_SDLOG_PROPERTIES_SERIAL] = {
-		.stype     = "sdlog",
-		.ttype     = "properties_serial",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "execute",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/* avc policy: allow sdlog radio_prop:file execute */
-	[AVC_SDLOG_RADIO_PROP] = {
-		.stype     = "sdlog",
-		.ttype     = "radio_prop",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "execute",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/* avc policy: allow sdlog system_file:file { entrypoint execute_no_trans } */
-	[AVC_SDLOG_SYSTEM_FILE] = {
-		.stype     = "sdlog",
-		.ttype     = "system_file",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "entrypoint execute_no_trans",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/*
-	 * Policy Group 5
-	 * Purpose: allow su to access tee device
-	 */
-	/* avc policy: allow su tee_device:chr_file { open read write ioctl } */
-	[AVC_SU_TEE_DEV_CHR_FILE] = {
-		.stype     = "su",
-		.ttype     = "tee_device",
-		.tclass    = "chr_file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "open read write ioctl",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/*
-	 * Policy Group 6
-	 * Purpose: allow vold to setenforce
-	 */
-	/* avc policy: allow vold kernel:security setenforce */
-	[AVC_VOLD_KERNEL] = {
-		.stype     = "vold",
-		.ttype     = "kernel",
-		.tclass    = "security",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "setenforce",
-		.op        = OP_NEW | OP_DEL,
-	},
-
-	/* avc policy: allow vold selinuxfs:file write */
-	[AVC_VOLD_SELINUXFS] = {
-		.stype     = "vold",
-		.ttype     = "selinuxfs",
-		.tclass    = "file",
-		.specified = AVTAB_ALLOWED,
-		.perm      = "write",
-		.op        = OP_NEW | OP_DEL,
-	},
-};
+static uint32_t pp_version_num = 0;
+static uint32_t pp_perf_mode = 0;
 
 
 /*
@@ -684,6 +475,12 @@ static int pp_debugfs_preproc_open(struct inode *inode, struct file *filp);
 static int pp_debugfs_postproc_open(struct inode *inode, struct file *filp);
 static ssize_t pp_debugfs_read(struct file *filp, char __user *buf, size_t count, loff_t *ppos);
 #endif /* PP_DEBUGFS */
+
+static int pp_appendix_to_type(policy_appendix_t *appx, pp_avc_desc_t *desc);
+static int pp_appendix_to_perm(policy_appendix_classes_t *appx, const char *pname, uint32_t *pdatums);
+static int pp_appendix_to_class_helper(policy_appendix_classes_t *appx, pp_avc_desc_t *desc);
+static int pp_appendix_to_class(policy_appendix_t *appx, pp_avc_desc_t *desc);
+static int pp_appendix_to_avc(policy_appendix_t *appx, pp_avc_desc_t *list, size_t list_len);
 
 static int pp_read_bitmap(struct policy_file *fp, policy_bitmap_t *map);
 static int pp_read_type_set(struct policy_file *fp, policy_type_set_t *type_set);
@@ -727,6 +524,9 @@ static int pp_read_genfs_item_helper(struct policy_file *fp, policy_genfs_ocon_i
 static int pp_read_genfs_item(struct policy_file *fp, policy_genfs_item_t *item);
 static int pp_read_range_item(struct policy_file *fp, policy_range_item_t *item);
 static int pp_read_typeattr_map_item(struct policy_file *fp, policy_typeattr_map_item_t *item);
+static int pp_read_appendix_type(struct policy_file *fp, policy_appendix_types_t *type);
+static int pp_read_appendix_perm(struct policy_file *fp, policy_appendix_perms_t *perm);
+static int pp_read_appendix_class(struct policy_file *fp, policy_appendix_classes_t *class);
 
 static int pp_write_bitmap(policy_bitmap_t *map, struct policy_file *fp);
 static int pp_write_type_set(policy_type_set_t *type_set, struct policy_file *fp);
@@ -826,6 +626,7 @@ static int pp_parse_genfs(struct policy_file *fp, policy_db_t *db);
 static int pp_parse_range(struct policy_file *fp, policy_db_t *db);
 static int pp_parse_typeattr_map(struct policy_file *fp, policy_db_t *db);
 static int pp_parse_policy(struct policy_file *fp, policy_db_t *db);
+static int pp_parse_appendix(struct policy_file *fp, policy_appendix_t *appx);
 
 static int pp_build_header(policy_db_t *db, struct policy_file *fp);
 static int pp_build_policycaps(policy_db_t *db, struct policy_file *fp);
@@ -856,6 +657,7 @@ static int pp_free_genfs(policy_db_t *db);
 static int pp_free_range(policy_db_t *db);
 static int pp_free_typeattr_map(policy_db_t *db);
 static int pp_free_policy(policy_db_t *db);
+static int pp_free_appendix(policy_appendix_t *appx);
 
 static const char *pp_class_to_name(policy_db_t *db, uint32_t class);
 static const char *pp_type_to_name(policy_db_t *db, uint32_t type);
@@ -870,6 +672,9 @@ static bool pp_find_avc(policy_db_t *db, pp_avc_desc_t *desc, size_t *index);
 
 static bool pp_match_permissive(policy_db_t *db, pp_perm_desc_t *desc, size_t *index);
 static bool pp_match_avc(policy_db_t *db, pp_avc_desc_t *desc, size_t *index);
+
+static bool pp_check_context(policy_db_t *db, pp_avc_desc_t *desc);
+static bool pp_check_datums(policy_db_t *db, size_t index, pp_avc_desc_t *desc);
 
 static int pp_new_permissive(policy_db_t *db, pp_perm_desc_t *desc, size_t *len);
 static int pp_new_avc(policy_db_t *db, pp_avc_desc_t *desc, size_t *len);
@@ -975,6 +780,126 @@ static ssize_t pp_debugfs_read(struct file *filp, char __user *buf, size_t count
 	return rc;
 }
 #endif /* PP_DEBUGFS */
+
+static int pp_appendix_to_type(policy_appendix_t *appx, pp_avc_desc_t *desc)
+{
+	uint32_t i;
+	policy_appendix_types_t *list = appx->types_list;
+	int rc = -EINVAL;
+
+	desc->sdatums = 0;
+	desc->tdatums = 0;
+
+	for (i = 0; i < appx->types_num; ++i) {
+		if (!strcmp(list[i].name, desc->sname)) {
+			desc->sdatums = list[i].datums;
+		}
+
+		if (!strcmp(list[i].name, desc->tname)) {
+			desc->tdatums = list[i].datums;
+		}
+
+		if (desc->sdatums != 0 && desc->tdatums != 0) {
+			rc = 0;
+			break;
+		}
+	}
+
+	return rc;
+}
+
+static int pp_appendix_to_perm(policy_appendix_classes_t *appx, const char *pname, uint32_t *pdatums)
+{
+	uint32_t i;
+	policy_appendix_perms_t *list = appx->perms;
+	int rc = -EINVAL;
+
+	for (i = 0; i < appx->perms_num; ++i) {
+		if (!strcmp(list[i].name, pname)) {
+			*pdatums = list[i].datums;
+			rc = 0;
+			break;
+		}
+	}
+
+	return rc;
+}
+
+static int pp_appendix_to_class_helper(policy_appendix_classes_t *appx, pp_avc_desc_t *desc)
+{
+	uint32_t i;
+	char *buf = NULL;
+	const char *pname = NULL;
+	int rc = 0;
+
+	buf = pp_zalloc(strlen(desc->pname) + 1);
+	if (!buf) {
+		pr_err("SELinux: failed to allocate memory\n");
+		return -ENOMEM;
+	}
+	memcpy(buf, desc->pname, strlen(desc->pname));
+
+	for (i = 0; i < PP_DATUMS_NUM; ++i) {
+		pname = strsep(&buf, PP_PERMS_DELIM);
+		if (!pname || !*pname) {
+			break;
+		}
+
+		rc = pp_appendix_to_perm(appx, pname, &desc->pdatums[i]);
+		if (rc) {
+			break;
+		}
+	}
+
+	if (buf) {
+		pp_free(buf);
+		buf = NULL;
+	}
+
+	return rc;
+}
+
+static int pp_appendix_to_class(policy_appendix_t *appx, pp_avc_desc_t *desc)
+{
+	uint32_t i;
+	policy_appendix_classes_t *list = appx->classes_list;
+	int rc = -EINVAL;
+
+	desc->cdatums = 0;
+	memset(desc->pdatums, 0, PP_DATUMS_NUM * sizeof(uint32_t));
+
+	for (i = 0; i < appx->classes_num; ++i) {
+		if (!strcmp(list[i].cname, desc->cname)) {
+			desc->cdatums = list[i].cdatums;
+			rc = pp_appendix_to_class_helper(&list[i], desc);
+			if (!rc) {
+				break;
+			}
+		}
+	}
+
+	return rc;
+}
+
+static int pp_appendix_to_avc(policy_appendix_t *appx, pp_avc_desc_t *list, size_t list_len)
+{
+	uint32_t i;
+	int rc = 0;
+
+	for (i = 0; i < list_len; ++i) {
+		rc = pp_appendix_to_type(appx, &list[i]);
+		if (rc) {
+			break;
+		}
+
+		rc = pp_appendix_to_class(appx, &list[i]);
+		if (rc) {
+			break;
+		}
+	}
+
+	return rc;
+}
 
 static int pp_read_bitmap(struct policy_file *fp, policy_bitmap_t *map)
 {
@@ -1648,7 +1573,7 @@ static int pp_read_roles_helper(struct policy_file *fp, policy_roles_t *roles)
 	}
 
 	if (roles->name_len) {
-	roles->name = pp_zalloc(roles->name_len + 1);
+		roles->name = pp_zalloc(roles->name_len + 1);
 		if (!roles->name) {
 			pr_err("SELinux: unable to allocate memory for policydb "
 						"string of length %d\n", roles->name_len + 1);
@@ -1663,7 +1588,7 @@ static int pp_read_roles_helper(struct policy_file *fp, policy_roles_t *roles)
 
 	rc = pp_read_bitmap(fp, &(roles->dominates));
 	if (rc) {
-		return rc;
+		goto pp_read_roles_helper_fail;
 	}
 
 	/*
@@ -1672,7 +1597,7 @@ static int pp_read_roles_helper(struct policy_file *fp, policy_roles_t *roles)
 	*/
 	rc = pp_read_bitmap(fp, &(roles->types));
 	if (rc) {
-		return rc;
+		goto pp_read_roles_helper_fail;
 	}
 
 	return 0;
@@ -3084,6 +3009,160 @@ static int pp_read_typeattr_map_item(struct policy_file *fp, policy_typeattr_map
 	return pp_read_bitmap(fp, &(item->attr_map));
 }
 
+static int pp_read_appendix_type(struct policy_file *fp, policy_appendix_types_t *type)
+{
+	int rc;
+
+	rc = next_entry(&(type->name_len), fp, sizeof(type->name_len));
+	if (rc) {
+		return rc;
+	}
+
+	if (type->name_len) {
+		type->name = pp_zalloc(type->name_len + 1);
+		if (!type->name) {
+			pr_err("SELinux: unable to allocate memory for policydb "
+					"string of length %d\n", type->name_len + 1);
+			return -ENOMEM;
+		}
+
+		rc = next_entry(type->name, fp, type->name_len);
+		if (rc) {
+			goto pp_read_appendix_type_fail;
+		}
+	}
+
+	rc = next_entry(&(type->datums), fp, sizeof(type->datums));
+	if (rc) {
+		goto pp_read_appendix_type_fail;
+	}
+
+	return 0;
+
+pp_read_appendix_type_fail:
+
+	if (type->name) {
+		pp_free(type->name);
+		type->name = NULL;
+	}
+
+	return rc;
+}
+
+static int pp_read_appendix_perm(struct policy_file *fp, policy_appendix_perms_t *perm)
+{
+	int rc;
+
+	rc = next_entry(&(perm->name_len), fp, sizeof(perm->name_len));
+	if (rc) {
+		return rc;
+	}
+
+	if (perm->name_len) {
+		perm->name = pp_zalloc(perm->name_len + 1);
+		if (!perm->name) {
+			pr_err("SELinux: unable to allocate memory for policydb "
+					"string of length %d\n", perm->name_len + 1);
+			return -ENOMEM;
+		}
+
+		rc = next_entry(perm->name, fp, perm->name_len);
+		if (rc) {
+			goto pp_read_appendix_perm_fail;
+		}
+	}
+
+	rc = next_entry(&(perm->datums), fp, sizeof(perm->datums));
+	if (rc) {
+		goto pp_read_appendix_perm_fail;
+	}
+
+	return 0;
+
+pp_read_appendix_perm_fail:
+
+	if (perm->name) {
+		pp_free(perm->name);
+		perm->name = NULL;
+	}
+
+	return rc;
+}
+
+static int pp_read_appendix_class(struct policy_file *fp, policy_appendix_classes_t *class)
+{
+	uint32_t i;
+	policy_appendix_perms_t *list = NULL;
+	int rc;
+
+	rc = next_entry(&(class->cname_len), fp, sizeof(class->cname_len));
+	if (rc) {
+		return rc;
+	}
+
+	if (class->cname_len) {
+		class->cname = pp_zalloc(class->cname_len + 1);
+		if (!class->cname) {
+			pr_err("SELinux: unable to allocate memory for policydb "
+					"string of length %d\n", class->cname_len + 1);
+			return -ENOMEM;
+		}
+
+		rc = next_entry(class->cname, fp, class->cname_len);
+		if (rc) {
+			goto pp_read_appendix_class_fail;
+		}
+	}
+
+	rc = next_entry(&(class->cdatums), fp, sizeof(class->cdatums));
+	if (rc) {
+		goto pp_read_appendix_class_fail;
+	}
+
+	rc = next_entry(&(class->perms_num), fp, sizeof(class->perms_num));
+	if (rc) {
+		goto pp_read_appendix_class_fail;
+	}
+
+	if (!class->perms_num) {
+		rc = -EINVAL;
+		goto pp_read_appendix_class_fail;
+	}
+
+	class->perms = pp_zalloc(class->perms_num * sizeof(policy_appendix_perms_t));
+	if (!class->perms) {
+		pr_err("SELinux: unable to allocate memory for policydb "
+				"attribute list of length %u\n",
+				(uint32_t)(class->perms_num * sizeof(policy_appendix_perms_t)));
+		rc = -ENOMEM;
+		goto pp_read_appendix_class_fail;
+	}
+	list = (policy_appendix_perms_t *)class->perms;
+
+	for (i = 0; i < class->perms_num; ++i) {
+		rc = pp_read_appendix_perm(fp, &list[i]);
+		if (rc) {
+			goto pp_read_appendix_class_fail;
+		}
+	}
+
+	return 0;
+
+pp_read_appendix_class_fail:
+
+	if (class->perms) {
+		pp_free(class->perms);
+		class->perms = NULL;
+	}
+
+	if (class->cname) {
+		pp_free(class->cname);
+		class->cname = NULL;
+	}
+
+	return rc;
+}
+
 static int pp_write_bitmap(policy_bitmap_t *map, struct policy_file *fp)
 {
 	uint32_t i;
@@ -4347,14 +4426,15 @@ static int pp_parse_header(struct policy_file *fp, policy_db_t *db)
 
 	rc = next_entry(&(db->target_str_len), fp, sizeof(db->target_str_len));
 	if (rc) {
-		return rc;
+		goto pp_parse_header_fail;
 	}
 
 	if (le32_to_cpu(db->target_str_len) != strlen(POLICYDB_STRING)) {
 		pr_err("SELinux: policydb string length %d does not "
 		       "match expected length %Zu\n",
 		       le32_to_cpu(db->target_str_len), strlen(POLICYDB_STRING));
-		return -EINVAL;
+		rc = -EINVAL;
+		goto pp_parse_header_fail;
 	}
 
 	if (db->target_str_len) {
@@ -4362,7 +4442,8 @@ static int pp_parse_header(struct policy_file *fp, policy_db_t *db)
 		if (!db->target_str) {
 			pr_err("SELinux: unable to allocate memory for policydb "
 			       "string of length %d\n", db->target_str_len + 1);
-			return -ENOMEM;
+			rc = -ENOMEM;
+			goto pp_parse_header_fail;
 		}
 
 		rc = next_entry(db->target_str, fp, db->target_str_len);
@@ -4922,6 +5003,82 @@ static int pp_parse_policy(struct policy_file *fp, policy_db_t *db)
 	return 0;
 }
 
+static int pp_parse_appendix(struct policy_file *fp, policy_appendix_t *appx)
+{
+	uint32_t i;
+	policy_appendix_types_t *types_list = NULL;
+	policy_appendix_classes_t *classes_list = NULL;
+	int rc;
+
+	rc = next_entry(&(appx->types_num), fp, sizeof(appx->types_num));
+	if (rc) {
+		return rc;
+	}
+
+	if (!appx->types_num) {
+		return -EINVAL;
+	}
+
+	appx->types_list = pp_zalloc(appx->types_num * sizeof(policy_appendix_types_t));
+	if (!appx->types_list) {
+		pr_err("SELinux: unable to allocate memory for policydb "
+				"attribute list of length %u\n",
+				(uint32_t)(appx->types_num * sizeof(policy_appendix_types_t)));
+		return -ENOMEM;
+	}
+	types_list = (policy_appendix_types_t *)appx->types_list;
+
+	for (i = 0; i < appx->types_num; ++i) {
+		rc = pp_read_appendix_type(fp, &types_list[i]);
+		if (rc) {
+			goto pp_parse_appendix_fail;
+		}
+	}
+
+	rc = next_entry(&(appx->classes_num), fp, sizeof(appx->classes_num));
+	if (rc) {
+		goto pp_parse_appendix_fail;
+	}
+
+	if (!appx->classes_num) {
+		rc = -EINVAL;
+		goto pp_parse_appendix_fail;
+	}
+
+	appx->classes_list = pp_zalloc(appx->classes_num * sizeof(policy_appendix_classes_t));
+	if (!appx->classes_list) {
+		pr_err("SELinux: unable to allocate memory for policydb "
+				"attribute list of length %u\n",
+				(uint32_t)(appx->classes_num * sizeof(policy_appendix_classes_t)));
+		rc = -ENOMEM;
+		goto pp_parse_appendix_fail;
+	}
+	classes_list = (policy_appendix_classes_t *)appx->classes_list;
+
+	for (i = 0; i < appx->classes_num; ++i) {
+		rc = pp_read_appendix_class(fp, &classes_list[i]);
+		if (rc) {
+			goto pp_parse_appendix_fail;
+		}
+	}
+
+	return 0;
+
+pp_parse_appendix_fail:
+
+	if (appx->classes_list) {
+		pp_free(appx->classes_list);
+		appx->classes_list = NULL;
+	}
+
+	if (appx->types_list) {
+		pp_free(appx->types_list);
+		appx->types_list = NULL;
+	}
+
+	return rc;
+}
+
 static int pp_build_header(policy_db_t *db, struct policy_file *fp)
 {
 	(void)put_entry(&(db->magic), sizeof(db->magic), 1, fp);
@@ -5415,6 +5572,51 @@ static int pp_free_policy(policy_db_t *db)
 	return 0;
 }
 
+static int pp_free_appendix(policy_appendix_t *appx)
+{
+	uint32_t i, j;
+	policy_appendix_types_t *types_list = (policy_appendix_types_t *)appx->types_list;
+	policy_appendix_classes_t *classes_list = (policy_appendix_classes_t *)appx->classes_list;
+
+	for (i = 0; i < appx->types_num; ++i) {
+		if (types_list[i].name) {
+			pp_free(types_list[i].name);
+			types_list[i].name = NULL;
+		}
+	}
+
+	if (appx->types_list) {
+		pp_free(appx->types_list);
+		appx->types_list = NULL;
+	}
+
+	for (i = 0; i < appx->classes_num; ++i) {
+		if (classes_list[i].cname) {
+			pp_free(classes_list[i].cname);
+			classes_list[i].cname = NULL;
+		}
+
+		for (j = 0; j < classes_list[i].perms_num; ++j) {
+			if (classes_list[i].perms[j].name) {
+				pp_free(classes_list[i].perms[j].name);
+				classes_list[i].perms[j].name = NULL;
+			}
+		}
+
+		if (classes_list[i].perms) {
+			pp_free(classes_list[i].perms);
+			classes_list[i].perms = NULL;
+		}
+	}
+
+	if (appx->classes_list) {
+		pp_free(appx->classes_list);
+		appx->classes_list = NULL;
+	}
+
+	return 0;
+}
+
 static const char *pp_class_to_name(policy_db_t *db, uint32_t class)
 {
 	uint32_t i;
@@ -5438,7 +5640,7 @@ static const char *pp_type_to_name(policy_db_t *db, uint32_t type)
 	const char *name = NULL;
 
 	for (i = 0; i < db->symtab_types.element_num; ++i) {
-		if (list[i].datums == type) {
+		if ((list[i].datums == type) && (list[i].properties == TYPEDATUM_PROPERTY_PRIMARY)) {
 			name = list[i].name;
 			break;
 		}
@@ -5447,7 +5649,7 @@ static const char *pp_type_to_name(policy_db_t *db, uint32_t type)
 	return name;
 }
 
-static uint32_t pp_name_to_class(policy_db_t *db, const char *name)
+static uint32_t __attribute__ ((unused)) pp_name_to_class(policy_db_t *db, const char *name)
 {
 	uint32_t i;
 	policy_classes_t *list = (policy_classes_t *)db->symtab_classes.attr_list;
@@ -5542,7 +5744,7 @@ static bool pp_find_class(policy_db_t *db, pp_avc_desc_t *desc, size_t *index)
 	bool rc = false;
 
 	for (i = 0; i < db->symtab_classes.element_num; ++i) {
-		if (!strcmp(list[i].name, desc->tclass)) {
+		if (!strcmp(list[i].name, desc->cname)) {
 			*index = i;
 			rc = true;
 			break;
@@ -5556,29 +5758,42 @@ static bool pp_find_avc(policy_db_t *db, pp_avc_desc_t *desc, size_t *index)
 {
 	uint32_t i;
 	policy_avtab_item_t *list = (policy_avtab_item_t *)db->avtab.attr_list;
-	const char *stype = NULL;
-	const char *ttype = NULL;
-	const char *tclass = NULL;
+	const char *sname = NULL;
+	const char *tname = NULL;
+	const char *cname = NULL;
 	uint16_t specified;
 	bool rc = false;
 
-	for (i = 0; i < db->avtab.element_num; ++i) {
-		stype = pp_type_to_name(db, list[i].source_type);
-		ttype = pp_type_to_name(db, list[i].target_type);
-		tclass = pp_class_to_name(db, list[i].target_class);
-		specified = list[i].specified;
-
-		if (!stype || !ttype || !tclass) {
-			continue;
+	if (pp_perf_mode) {
+		for (i = 0; i < db->avtab.element_num; ++i) {
+			if ((list[i].source_type == desc->sdatums)
+					&& (list[i].target_type == desc->tdatums)
+					&& (list[i].target_class == desc->cdatums)
+					&& (list[i].specified & desc->specified)) {
+				*index = i;
+				rc = true;
+				break;
+			}
 		}
+	} else {
+		for (i = 0; i < db->avtab.element_num; ++i) {
+			sname = pp_type_to_name(db, list[i].source_type);
+			tname = pp_type_to_name(db, list[i].target_type);
+			cname = pp_class_to_name(db, list[i].target_class);
+			specified = list[i].specified;
 
-		if (!strcmp(stype, desc->stype)
-			&& !strcmp(ttype, desc->ttype)
-			&& !strcmp(tclass, desc->tclass)
-			&& (specified == desc->specified)) {
-			*index = i;
-			rc = true;
-			break;
+			if (!sname || !tname || !cname) {
+				continue;
+			}
+
+			if (!strcmp(sname, desc->sname)
+					&& !strcmp(tname, desc->tname)
+					&& !strcmp(cname, desc->cname)
+					&& (specified & desc->specified)) {
+				*index = i;
+				rc = true;
+				break;
+			}
 		}
 	}
 
@@ -5599,7 +5814,7 @@ static bool pp_match_permissive(policy_db_t *db, pp_perm_desc_t *desc, size_t *i
 		for (j = start_bit; j < map.high_bit; ++j) {
 			if (map.node_list[i].node_map & (PP_MAPBIT << (j - start_bit))) {
 				name = pp_type_to_name(db, j);
-				if (name && !strcmp(name, desc->sid)) {
+				if (name && !strcmp(name, desc->name)) {
 					*index = i;
 					rc = true;
 					break;
@@ -5615,29 +5830,29 @@ static bool __attribute__ ((unused)) pp_match_avc(policy_db_t *db, pp_avc_desc_t
 {
 	uint32_t i;
 	policy_avtab_item_t *list = (policy_avtab_item_t *)db->avtab.attr_list;
-	const char *stype = NULL;
-	const char *ttype = NULL;
-	const char *tclass = NULL;
+	const char *sname = NULL;
+	const char *tname = NULL;
+	const char *cname = NULL;
 	uint16_t specified;
 	uint32_t datums;
 	bool rc = false;
 
 	for (i = 0; i < db->avtab.element_num; ++i) {
-		stype = pp_type_to_name(db, list[i].source_type);
-		ttype = pp_type_to_name(db, list[i].target_type);
-		tclass = pp_class_to_name(db, list[i].target_class);
+		sname = pp_type_to_name(db, list[i].source_type);
+		tname = pp_type_to_name(db, list[i].target_type);
+		cname = pp_class_to_name(db, list[i].target_class);
 		specified = list[i].specified;
 		datums = list[i].datums;
 
-		if (!stype || !ttype || !tclass) {
+		if (!sname || !tname || !cname) {
 			continue;
 		}
 
-		if (!strcmp(stype, desc->stype)
-			&& !strcmp(ttype, desc->ttype)
-			&& !strcmp(tclass, desc->tclass)
-			&& (specified == desc->specified)
-			&& (datums & pp_name_to_perm(db, desc, desc->perm))) {
+		if (!strcmp(sname, desc->sname)
+				&& !strcmp(tname, desc->tname)
+				&& !strcmp(cname, desc->cname)
+				&& (specified == desc->specified)
+				&& (datums & pp_name_to_perm(db, desc, desc->pname))) {
 			*index = i;
 			rc = true;
 			break;
@@ -5647,13 +5862,41 @@ static bool __attribute__ ((unused)) pp_match_avc(policy_db_t *db, pp_avc_desc_t
 	return rc;
 }
 
+static bool pp_check_context(policy_db_t *db, pp_avc_desc_t *desc)
+{
+	if (pp_perf_mode) {
+		if (!desc->sdatums || !desc->tdatums || !desc->cdatums) {
+			return false;
+		}
+	} else {
+		if (!pp_name_to_type(db, desc->sname)
+				|| !pp_name_to_type(db, desc->tname)
+				|| !pp_name_to_class(db, desc->cname)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool pp_check_datums(policy_db_t *db, size_t index, pp_avc_desc_t *desc)
+{
+	policy_avtab_item_t *list = (policy_avtab_item_t *)db->avtab.attr_list;
+
+	if (list[index].datums == 0) {
+		return false;
+	}
+
+	return true;
+}
+
 static int pp_new_permissive(policy_db_t *db, pp_perm_desc_t *desc, size_t *len)
 {
 	policy_bitmap_t map = db->permissive_map;
 	uint32_t map_size = map.map_size;
 	uint32_t node_count = map.node_count;
 	policy_node_t *list = map.node_list, *ptr = NULL;
-	uint32_t type = pp_name_to_type(db, desc->sid);
+	uint32_t type = pp_name_to_type(db, desc->name);
 	uint32_t start_bit = type & ~(map_size - 1);
 
 	/* TODO: FIXME */
@@ -5688,11 +5931,12 @@ static int pp_new_permissive(policy_db_t *db, pp_perm_desc_t *desc, size_t *len)
 
 static int pp_new_avc(policy_db_t *db, pp_avc_desc_t *desc, size_t *len)
 {
+	uint32_t i;
 	policy_avtab_item_t *list = (policy_avtab_item_t *)db->avtab.attr_list, *ptr = NULL;
 	uint32_t num = db->avtab.element_num;
 	uint32_t av;
 	char *buf = NULL;
-	const char *perm = NULL;
+	const char *pname = NULL;
 	int rc;
 
 	num++;
@@ -5706,26 +5950,38 @@ static int pp_new_avc(policy_db_t *db, pp_avc_desc_t *desc, size_t *len)
 	pp_free(list);
 	list = ptr;
 
-	list[num - 1].source_type = pp_name_to_type(db, desc->stype);
-	list[num - 1].target_type = pp_name_to_type(db, desc->ttype);
-	list[num - 1].target_class = pp_name_to_class(db, desc->tclass);
+	if (pp_perf_mode) {
+		list[num - 1].source_type = desc->sdatums;
+		list[num - 1].target_type = desc->tdatums;
+		list[num - 1].target_class = desc->cdatums;
+	} else {
+		list[num - 1].source_type = pp_name_to_type(db, desc->sname);
+		list[num - 1].target_type = pp_name_to_type(db, desc->tname);
+		list[num - 1].target_class = pp_name_to_class(db, desc->cname);
+	}
+
 	list[num - 1].specified = desc->specified;
 
-	buf = pp_zalloc(strlen(desc->perm) + 1);
+	buf = pp_zalloc(strlen(desc->pname) + 1);
 	if (!buf) {
 		pr_err("SELinux: failed to allocate memory\n");
 		rc = -ENOMEM;
 		goto pp_new_avc_fail;
 	}
-	memcpy(buf, desc->perm, strlen(desc->perm));
+	memcpy(buf, desc->pname, strlen(desc->pname));
 
-	for (;;) {
-		perm = strsep(&buf, PP_PERMS_DELIM);
-		if (!perm || !*perm) {
+	for (i = 0; i < PP_DATUMS_NUM; ++i) {
+		pname = strsep(&buf, PP_PERMS_DELIM);
+		if (!pname || !*pname) {
 			break;
 		}
 
-		av = pp_name_to_perm(db, desc, perm);
+		if (pp_perf_mode) {
+			av = 1U << (desc->pdatums[i] - 1);
+		} else {
+			av = pp_name_to_perm(db, desc, pname);
+		}
+
 		list[num - 1].datums |= av;
 	}
 
@@ -5806,25 +6062,31 @@ static int pp_del_avc(policy_db_t *db, size_t index, pp_avc_desc_t *desc, size_t
 
 static int pp_mod_avc(policy_db_t *db, size_t index, pp_avc_desc_t *desc)
 {
+	uint32_t i;
 	policy_avtab_item_t *list = (policy_avtab_item_t *)db->avtab.attr_list;
 	uint32_t av;
 	char *buf = NULL;
-	const char *perm = NULL;
+	const char *pname = NULL;
 
-	buf = pp_zalloc(strlen(desc->perm) + 1);
+	buf = pp_zalloc(strlen(desc->pname) + 1);
 	if (!buf) {
 		pr_err("SELinux: failed to allocate memory\n");
 		return -ENOMEM;
 	}
-	memcpy(buf, desc->perm, strlen(desc->perm));
+	memcpy(buf, desc->pname, strlen(desc->pname));
 
-	for (;;) {
-		perm = strsep(&buf, PP_PERMS_DELIM);
-		if (!perm || !*perm) {
+	for (i = 0; i < PP_DATUMS_NUM; ++i) {
+		pname = strsep(&buf, PP_PERMS_DELIM);
+		if (!pname || !*pname) {
 			break;
 		}
 
-		av = pp_name_to_perm(db, desc, perm);
+		if (pp_perf_mode) {
+			av = 1U << (desc->pdatums[i] - 1);
+		} else {
+			av = pp_name_to_perm(db, desc, pname);
+		}
+
 		list[index].datums |= av;
 	}
 
@@ -5838,25 +6100,31 @@ static int pp_mod_avc(policy_db_t *db, size_t index, pp_avc_desc_t *desc)
 
 static int pp_unmod_avc(policy_db_t *db, size_t index, pp_avc_desc_t *desc)
 {
+	uint32_t i;
 	policy_avtab_item_t *list = (policy_avtab_item_t *)db->avtab.attr_list;
 	uint32_t av;
 	char *buf = NULL;
-	const char *perm = NULL;
+	const char *pname = NULL;
 
-	buf = pp_zalloc(strlen(desc->perm) + 1);
+	buf = pp_zalloc(strlen(desc->pname) + 1);
 	if (!buf) {
 		pr_err("SELinux: failed to allocate memory\n");
 		return -ENOMEM;
 	}
-	memcpy(buf, desc->perm, strlen(desc->perm));
+	memcpy(buf, desc->pname, strlen(desc->pname));
 
-	for (;;) {
-		perm = strsep(&buf, PP_PERMS_DELIM);
-		if (!perm || !*perm) {
+	for (i = 0; i < PP_DATUMS_NUM; ++i) {
+		pname = strsep(&buf, PP_PERMS_DELIM);
+		if (!pname || !*pname) {
 			break;
 		}
 
-		av = pp_name_to_perm(db, desc, perm);
+		if (pp_perf_mode) {
+			av = 1U << (desc->pdatums[i] - 1);
+		} else {
+			av = pp_name_to_perm(db, desc, pname);
+		}
+
 		list[index].datums &= ~av;
 	}
 
@@ -5880,16 +6148,11 @@ static int pp_preproc_permissive(policy_db_t *db, pp_perm_desc_t *list, size_t l
 			continue;
 		}
 
-		if (list[i].op & OP_NEW) {
-			rc = pp_new_permissive(db, &list[i], &len);
-			if (rc) {
-				break;
-			}
-			*perm_len += len;
-		} else {
-			/* Do nothing here */
-			continue;
+		rc = pp_new_permissive(db, &list[i], &len);
+		if (rc) {
+			break;
 		}
+		*perm_len += len;
 	}
 
 	return rc;
@@ -5904,14 +6167,12 @@ static int pp_preproc_avc(policy_db_t *db, pp_avc_desc_t *list, size_t list_len,
 
 	for (i = 0; i < list_len; ++i) {
 		if (pp_find_avc(db, &list[i], &index)) {
-			if (list[i].op & OP_MOD) {
-				rc = pp_mod_avc(db, index, &list[i]);
-				if (rc) {
-					break;
-				}
+			rc = pp_mod_avc(db, index, &list[i]);
+			if (rc) {
+				break;
 			}
 		} else {
-			if (list[i].op & OP_NEW) {
+			if (pp_check_context(db, &list[i])) {
 				rc = pp_new_avc(db, &list[i], &len);
 				if (rc) {
 					break;
@@ -5936,16 +6197,11 @@ static int pp_postproc_permissive(policy_db_t *db, pp_perm_desc_t *list, size_t 
 			continue;
 		}
 
-		if (list[i].op & OP_DEL) {
-			rc = pp_del_permissive(db, index, &list[i], &len);
-			if (rc) {
-				break;
-			}
-			*perm_len += len;
-		} else {
-			/* Do nothing here */
-			continue;
+		rc = pp_del_permissive(db, index, &list[i], &len);
+		if (rc) {
+			break;
 		}
+		*perm_len += len;
 	}
 
 	return rc;
@@ -5963,20 +6219,17 @@ static int pp_postproc_avc(policy_db_t *db, pp_avc_desc_t *list, size_t list_len
 			continue;
 		}
 
-		if (list[i].op & OP_DEL) {
+		rc = pp_unmod_avc(db, index, &list[i]);
+		if (rc) {
+			break;
+		}
+
+		if (!pp_check_datums(db, index, &list[i])) {
 			rc = pp_del_avc(db, index, &list[i], &len);
 			if (rc) {
 				break;
 			}
 			*avc_len += len;
-		} else if (list[i].op & OP_UNMOD) {
-			rc = pp_unmod_avc(db, index, &list[i]);
-			if (rc) {
-				break;
-			}
-		} else {
-			/* Do nothing here */
-			continue;
 		}
 	}
 
@@ -6005,6 +6258,18 @@ int pp_preproc_policy(void **data, size_t *len)
 	if (rc) {
 		pr_err("SELinux: failed to parse policy\n");
 		goto pp_preproc_policy_exit;
+	}
+
+	rc = pp_parse_appendix(&file, &policy_db.appx);
+	if (!rc) {
+		rc = pp_appendix_to_avc(&policy_db.appx, pp_avc_desc_list, ARRAY_SIZE(pp_avc_desc_list));
+		if (rc) {
+			pr_err("SELinux: failed to update avc with appendix\n");
+			goto pp_preproc_policy_exit;
+		}
+
+		pr_info("%s: appendix found, switch to perf mode\n", __func__);
+		pp_perf_mode = 1;
 	}
 
 	rc = pp_preproc_permissive(&policy_db, pp_perm_desc_list, ARRAY_SIZE(pp_perm_desc_list), &perm_len);
@@ -6070,6 +6335,7 @@ pp_preproc_policy_exit:
 		vfree(ptr);
 	}
 
+	(void)pp_free_appendix(&policy_db.appx);
 	(void)pp_free_policy(&policy_db);
 
 	return rc;
@@ -6179,6 +6445,7 @@ EXPORT_SYMBOL(pp_postproc_policy);
  */
 int pp_postproc_av_perms(struct policydb *pol, u32 ssid, u32 tsid, u16 tclass, u32 *perms)
 {
+	uint32_t i;
 	pp_avc_desc_t *list = &pp_avc_desc_list[AVC_ADBD_KERNEL];
 	size_t len;
 	char *scon = NULL, *tcon = NULL;
@@ -6188,7 +6455,7 @@ int pp_postproc_av_perms(struct policydb *pol, u32 ssid, u32 tsid, u16 tclass, u
 	const char *str = NULL;
 	int rc;
 
-	len = strlen("u:r::s0") + strlen(list->stype) + 1;
+	len = strlen("u:r::s0") + strlen(list->sname) + 1;
 
 	scon = pp_zalloc(len);
 	if (!scon) {
@@ -6196,7 +6463,7 @@ int pp_postproc_av_perms(struct policydb *pol, u32 ssid, u32 tsid, u16 tclass, u
 		return 0;
 	}
 
-	(void)snprintf(scon, len, "u:r:%s:s0", list->stype);
+	(void)snprintf(scon, len, "u:r:%s:s0", list->sname);
 
 #if  KERNEL_VERSION(3, 14, 0) <= LINUX_VERSION_CODE
 	rc = security_context_to_sid(scon, len, &sid, GFP_KERNEL);
@@ -6208,7 +6475,7 @@ int pp_postproc_av_perms(struct policydb *pol, u32 ssid, u32 tsid, u16 tclass, u
 		goto pp_postproc_av_perms_exit;
 	}
 
-	len = strlen("u:object_r::s0") + strlen(list->ttype) + 1;
+	len = strlen("u:object_r::s0") + strlen(list->tname) + 1;
 
 	tcon = pp_zalloc(len);
 	if (!tcon) {
@@ -6216,7 +6483,7 @@ int pp_postproc_av_perms(struct policydb *pol, u32 ssid, u32 tsid, u16 tclass, u
 		goto pp_postproc_av_perms_exit;
 	}
 
-	(void)snprintf(tcon, len, "u:object_r:%s:s0", list->ttype);
+	(void)snprintf(tcon, len, "u:object_r:%s:s0", list->tname);
 
 #if KERNEL_VERSION(3, 14, 0) <= LINUX_VERSION_CODE
 	rc = security_context_to_sid(tcon, len, &sid, GFP_KERNEL);
@@ -6228,19 +6495,19 @@ int pp_postproc_av_perms(struct policydb *pol, u32 ssid, u32 tsid, u16 tclass, u
 		goto pp_postproc_av_perms_exit;
 	}
 
-	class = string_to_security_class(pol, list->tclass);
+	class = string_to_security_class(pol, list->cname);
 	if (class != tclass) {
 		goto pp_postproc_av_perms_exit;
 	}
 
-	buf = pp_zalloc(strlen(list->perm) + 1);
+	buf = pp_zalloc(strlen(list->pname) + 1);
 	if (!buf) {
 		pr_err("SELinux: failed to allocate memory\n");
 		goto pp_postproc_av_perms_exit;
 	}
-	memcpy(buf, list->perm, strlen(list->perm));
+	memcpy(buf, list->pname, strlen(list->pname));
 
-	for (;;) {
+	for (i = 0; i < PP_DATUMS_NUM; ++i) {
 		str = strsep(&buf, PP_PERMS_DELIM);
 		if (!str || !*str) {
 			break;

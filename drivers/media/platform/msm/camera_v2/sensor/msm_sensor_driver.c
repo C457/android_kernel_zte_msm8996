@@ -1198,7 +1198,20 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 	struct msm_camera_sensor_board_info *sensordata = NULL;
 	struct device_node                  *of_node = s_ctrl->of_node;
 	uint32_t cell_id;
+	#if 0
+	rc = of_property_read_u32(of_node, "cell-index", &cell_id);
+	if ((rc < 0) || (cell_id == 1)) {
+		rc = -EINVAL;
+		return rc;
+	}
+	s_ctrl->sensordata = kzalloc(sizeof(*sensordata), GFP_KERNEL);
+	if (!s_ctrl->sensordata) {
+		pr_err("failed: no memory");
+		return -ENOMEM;
+	}
 
+	sensordata = s_ctrl->sensordata;
+	#else
 	s_ctrl->sensordata = kzalloc(sizeof(*sensordata), GFP_KERNEL);
 	if (!s_ctrl->sensordata) {
 		pr_err("failed: no memory");
@@ -1216,6 +1229,7 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 		pr_err("failed: cell-index rc %d", rc);
 		goto FREE_SENSOR_DATA;
 	}
+      #endif
 	s_ctrl->id = cell_id;
 
 	/* Validate cell_id */

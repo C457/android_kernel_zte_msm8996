@@ -1850,8 +1850,19 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 	u32 temp;
 	bool bl_notify = false;
 
+#ifdef CONFIG_BOARD_FUJISAN
+	if (mfd->unset_bl_level == U32_MAX) {
+		if (!mfd->allow_bl_update) {
+			mutex_lock(&mfd->bl_lock);
+			mfd->allow_bl_update = true;
+			mutex_unlock(&mfd->bl_lock);
+		}
+		return;
+	}
+#else
 	if (mfd->unset_bl_level == U32_MAX)
 		return;
+#endif
 	mutex_lock(&mfd->bl_lock);
 	if (!mfd->allow_bl_update) {
 		pdata = dev_get_platdata(&mfd->pdev->dev);
@@ -5011,8 +5022,26 @@ int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
 		ret = mdss_fb_mode_switch(mfd, dsi_mode);
 		break;
 	case MSMFB_ATOMIC_COMMIT:
-		ret = mdss_fb_atomic_commit_ioctl(info, argp, file);
-		break;
+		{
+#ifdef CONFIG_BOARD_FUJISAN
+			/*the second panel will show chaos content at the first two frame when starting up.
+			skip it to avoid chaos show*/
+			struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+			static int skipframe = 2;
+
+			if (!mfd || (!mfd->op_enable)) {
+				pr_err("mfd is NULL or operation not permitted\n");
+				return -EPERM;
+			}
+			if (skipframe > 0 && mfd->index == 1) {
+				skipframe--;
+				pr_info("%s: MSMFB_ATOMIC_COMMIT skipframe %d break\n", __func__, skipframe);
+				break;
+			}
+#endif
+			ret = mdss_fb_atomic_commit_ioctl(info, argp, file);
+			break;
+		}
 
 	case MSMFB_ASYNC_POSITION_UPDATE:
 		ret = mdss_fb_async_position_update_ioctl(info, argp);

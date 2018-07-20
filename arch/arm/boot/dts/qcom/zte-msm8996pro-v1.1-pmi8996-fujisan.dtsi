@@ -4,7 +4,7 @@
 #include "dsi-panel-zte-truly-td4322-5p5-fhd-dualmipi-cmd.dtsi"
 #include "dsi-panel-zte-truly-td4322-5p5-fhd-dualmipi-cmd2.dtsi"
 
-
+#include "touch-key-backlight-fujisan.dtsi"
 
 &mdss_hdmi_tx {
 	status = "disabled";
@@ -405,3 +405,10 @@
 	};
 };
 /*End of MagnaChip Digital Hall Sensor*/
+&i2c_6 {
+	tfa9888@34 {
+		compatible = "nxp,tfa9888";
+		reg = <0x34>;
+		/* reset-gpio = <&pm8994_gpios 2 0>; */
+	};
+};

@@ -2618,6 +2618,25 @@ static enum flash_area fwu_go_nogo(void)
 	syna_version_id = (rmi4_data->config_id.fw_ver >> 8) & 0x00ff;
 	pr_notice("%s: syna_config_id = 0x%04x, syna_version_id = 0x%04x\n",
 		__func__, syna_config_id, syna_version_id);
+	if (!strcmp(fwu->read_config_buf, "A2504801")) {
+		pr_notice("%s: without key!\n", __func__);
+		if (syna_config_id != 0x0035) {
+			flash_area = UI_FIRMWARE;
+			pr_notice("%s: incompatible fw, update both UI and config!\n", __func__);
+			goto exit;
+		}
+	} else if (!strcmp(fwu->read_config_buf, "A2PRO4801")) {
+		pr_notice("%s: with key!\n", __func__);
+		if (syna_config_id == 0x0035) {
+			flash_area = UI_FIRMWARE;
+			pr_notice("%s: incompatible fw, update both UI and config!\n", __func__);
+			goto exit;
+		} else if (syna_version_id < 0x0037) {
+			flash_area = NONE;
+			pr_notice("%s: older key sensor\n", __func__);
+			goto exit;
+		}
+	}
 
 	/* Get device firmware ID */
 	device_fw_id = rmi4_data->firmware_id;

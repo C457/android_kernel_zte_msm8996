@@ -3383,7 +3383,7 @@ static void dwc3_gadget_linksts_change_interrupt(struct dwc3 *dwc,
 		break;
 	}
 
-	dev_dbg(dwc->dev, "Going from (%d)--->(%d)\n", dwc->link_state, next);
+	dev_info(dwc->dev, "Going from (%d)--->(%d)\n", dwc->link_state, next);
 	dwc->link_state = next;
 	wake_up_interruptible(&dwc->wait_linkstate);
 }
@@ -3436,7 +3436,7 @@ static void dwc3_gadget_suspend_interrupt(struct dwc3 *dwc,
 
 		dwc3_suspend_gadget(dwc);
 
-		dev_dbg(dwc->dev, "Notify OTG from %s\n", __func__);
+		dev_info(dwc->dev, "Notify OTG from %s\n", __func__);
 		dwc->b_suspend = true;
 		dwc3_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_OTG_EVENT, 0);
 	}

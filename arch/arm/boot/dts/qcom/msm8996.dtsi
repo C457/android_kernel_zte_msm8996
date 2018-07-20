@@ -39,7 +39,6 @@
 		i2c6 = &i2c_6;
 		i2c7 = &i2c_7;
 		i2c8 = &i2c_8;
-		i2c12 = &i2c_12;
 		spi0 = &spi_0;
 		mhi_rmnet0 = &mhi_rmnet_0;
 		mhi_rmnet1 = &mhi_rmnet_1;
@@ -360,27 +359,7 @@
 		clock-names = "core_clk", "iface_clk";
 	};
 
-	i2c_12: i2c@75ba000 {
-		compatible = "qcom,i2c-msm-v2";
-		#address-cells = <1>;
-		#size-cells = <0>;
-		reg-names = "qup_phys_addr";
-		reg = <0x75ba000 0x1000>;
-		interrupt-names = "qup_irq";
-		interrupts = <0 106 0>;
-		dmas = <&dma_blsp2 22 64 0x20000020 0x20>,
-			<&dma_blsp2 23 32 0x20000020 0x20>;
-		dma-names = "tx", "rx";
-		qcom,master-id = <84>;
-		qcom,clk-freq-out = <400000>;
-		qcom,clk-freq-in  = <19200000>;
-		clock-names = "iface_clk", "core_clk";
-		clocks = <&clock_gcc clk_gcc_blsp2_ahb_clk>,
-			 <&clock_gcc clk_gcc_blsp2_qup6_i2c_apps_clk>;
-		pinctrl-names = "i2c_active", "i2c_sleep";
-		pinctrl-0 = <&i2c_12_active>;
-		pinctrl-1 = <&i2c_12_sleep>;
-	};
+
 
 
 	dma_blsp1: qcom,sps-dma@0x7544000{ /* BLSP1 */
@@ -1979,6 +1958,11 @@
 			reg = <0x18 4>;
 		};
 
+		pm_count_time@5c {
+			compatible = "qcom,msm-imem-pm-count-time";
+			reg = <0x5c 24>;
+		};
+
 		restart_reason@65c {
 			compatible = "qcom,msm-imem-restart_reason";
 			reg = <0x65c 4>;
@@ -2917,6 +2901,15 @@
 			qcom,sensor-name = "tsens_tz_sensor20";
 			qcom,scaling-factor = <10>;
 		};
+		sensor_information36: qcom,sensor-information-36 {
+			qcom,sensor-type = "adc";
+			qcom,sensor-name = "xo_therm_buf";
+		};
+		sensor_information37: qcom,sensor-information-37 {
+			qcom,sensor-type = "adc";
+			qcom,sensor-name = "battery";
+			qcom,scaling-factor = <1000>;
+		};
 	};
 
 	mitigation_profile0: qcom,limit_info-0 {
@@ -2952,8 +2945,8 @@
 		qcom,temp-hysteresis = <10>;
 		qcom,therm-reset-temp = <115>;
 		qcom,freq-step = <4>;
-		qcom,core-limit-temp = <70>;
-		qcom,core-temp-hysteresis = <10>;
+		qcom,core-limit-temp = <95>;
+		qcom,core-temp-hysteresis = <5>;
 		qcom,hotplug-temp = <105>;
 		qcom,hotplug-temp-hysteresis = <40>;
 		qcom,freq-mitigation-temp = <90>;
@@ -3000,9 +2993,9 @@
 			qcom,low-threshold-uamp = <3400000>;
 			qcom,high-threshold-uamp = <4200000>;
 			qcom,mitigation-freq-khz = <576000>;
-			qcom,vph-high-threshold-uv = <3500000>;
-			qcom,vph-low-threshold-uv = <3300000>;
-			qcom,soc-low-threshold = <10>;
+			qcom,vph-high-threshold-uv = <3200000>;
+			qcom,vph-low-threshold-uv = <3100000>;
+			qcom,soc-low-threshold = <0>;
 			qcom,thermal-handle = <&msm_thermal_freq>;
 		};
 	};

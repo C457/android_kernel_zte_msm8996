@@ -1019,8 +1019,7 @@ static int lpm_cpuidle_select(struct cpuidle_driver *drv,
 
 /*zte_pm ++++ */
 /*cat /d/zte_gpio/dump_sleep_gpios*/
-extern bool zte_msm_cpu_pm_enter_sleep(enum msm_pm_sleep_mode mode, bool from_idle);
-extern void zte_pm_before_powercollapse(void);
+extern void zte_pm_vendor_before_powercollapse(void) __attribute__((weak));
 /*zte_pm ----*/
 
 static int lpm_cpuidle_enter(struct cpuidle_device *dev,
@@ -1313,7 +1312,8 @@ static int lpm_suspend_enter(suspend_state_t state)
 	if (!use_psci)
 		msm_cpu_pm_enter_sleep(cluster->cpu->levels[idx].mode, false);
 	else{
-		zte_pm_before_powercollapse();/*zte_pm  add:suspend->PC*/
+		/*zte_pm  add:suspend->PC*/
+		zte_pm_vendor_before_powercollapse();
 		psci_enter_sleep(cluster, idx, true);
 	}
 

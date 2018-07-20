@@ -2642,6 +2642,7 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 	int ret;
 	enum dwc3_id_state id;
 
+	pr_info("%s, event:%d, val:%d\n", __func__, psp, val->intval);
 	switch (psp) {
 	case POWER_SUPPLY_PROP_USB_OTG:
 		id = val->intval ? DWC3_ID_GROUND : DWC3_ID_FLOAT;
@@ -2761,7 +2762,7 @@ static int dwc3_msm_power_set_property_usb(struct power_supply *psy,
 		if (mdwc->chg_type != DWC3_INVALID_CHARGER)
 			mdwc->chg_state = USB_CHG_STATE_DETECTED;
 
-		dev_dbg(mdwc->dev, "%s: charger type: %s\n", __func__,
+		dev_info(mdwc->dev, "%s: charger type: %s\n", __func__,
 				chg_to_string(mdwc->chg_type));
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
@@ -4034,8 +4035,10 @@ static void dwc3_msm_otg_sm_work(struct work_struct *w)
 		return;
 	}
 
+	dev_info(mdwc->dev, "dwc3 otg_state = %d, inputs = %lx, chg_type = %d\n",
+		mdwc->otg_state, mdwc->inputs, mdwc->chg_type);
 	state = usb_otg_state_string(mdwc->otg_state);
-	dev_dbg(mdwc->dev, "%s state\n", state);
+	dev_info(mdwc->dev, "%s state\n", state);
 	dbg_event(0xFF, state, 0);
 
 	/* Check OTG state */

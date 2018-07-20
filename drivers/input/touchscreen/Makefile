@@ -86,3 +86,7 @@ obj-$(CONFIG_TOUCHSCREEN_TPS6507X)	+= tps6507x-ts.o
 obj-$(CONFIG_TOUCHSCREEN_ZFORCE)	+= zforce_ts.o
 obj-$(CONFIG_TOUCHSCREEN_GT9XX)		+= gt9xx/
 obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX) += synaptics_dsx_2.6/
+obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_V27) += synaptics_dsx_v2_7_0/
+obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_V27_2ND) += synaptics_dsx_v2_7_0_2nd/
+obj-$(CONFIG_ZTE_TS_PINCTRL) += zte_touchscreen_pinctrl.o
+obj-$(CONFIG_FORCE_TOUCH_NDT) += ndt_stress.o

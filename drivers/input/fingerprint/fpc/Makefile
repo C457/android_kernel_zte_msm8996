@@ -15,9 +15,7 @@
 # export KERNELDIR=[path to kernel source]
 # -----------------------------------------------------------------------------
 # called from kernel build system: just declare what our modules are
-ifeq ($(ZTE_FEATURE_FINGERPRINT_NON_WAKEUP), true)
 ccflags-$(CONFIG_FINGERPRINT_FPC) += -DZTE_FEATURE_FINGERPRINT_NON_WAKEUP
-endif
 obj-$(CONFIG_FINGERPRINT_FPC) := fpc1020_tee.o
 
 

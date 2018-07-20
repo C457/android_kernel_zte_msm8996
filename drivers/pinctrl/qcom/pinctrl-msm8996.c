@@ -2058,7 +2058,7 @@ int msm_dump_gpios(struct seq_file *m, int curr_len, char *gpio_buffer)
 			seq_printf(m, "%s\n", list_gpio);
 		} else {
 			pr_info("%s\n", list_gpio);
-			curr_len += snprintf(gpio_buffer + curr_len, GPIO_SNP_SIZE, "%s\n", list_gpio);
+			curr_len += snprintf(gpio_buffer + curr_len, sizeof(list_gpio), "%s\n", list_gpio);
 		}
 	}
 	return curr_len;
@@ -2131,7 +2131,7 @@ DEFINE_SIMPLE_ATTRIBUTE(gpio_int_owner_fops, gpio_int_owner_get_8996, NULL, "%ll
 DEFINE_SIMPLE_ATTRIBUTE(gpio_int_dect_fops, gpio_int_dect_get_8996, NULL, "%llu\n");
 
 int pmic_dump_pins(struct seq_file *m, int curr_len, char *gpio_buffer);
-extern int print_gpio_buffer(struct seq_file *m);
+extern int vendor_print_gpio_buffer(struct seq_file *m) __attribute__((weak));
 
 static int list_gpios_show(struct seq_file *m, void *unused)
 {
@@ -2142,7 +2142,7 @@ static int list_gpios_show(struct seq_file *m, void *unused)
 
 static int list_sleep_gpios_show(struct seq_file *m, void *unused)
 {
-	print_gpio_buffer(m);
+	vendor_print_gpio_buffer(m);
 	return 0;
 }
 

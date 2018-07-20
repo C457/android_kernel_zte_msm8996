@@ -396,14 +396,15 @@ static int config_ftm_from_tag(void)
 	return 0;
 }
 
-static int is_pid_configed_from_file(void)
+static int is_usb_factory_mode(void)
 {
 	return !!got_manufacture_tag;
 }
 
 static void ftm_iSerialNumber_filter(struct usb_composite_dev *cdev)
 {
-	if (is_pid_configed_from_file()
+	/* If tradefed case reboot ftmmode, do report usb serial number */
+	if (is_usb_factory_mode()
 		|| (zte_usb_parameters.noSerialno && !zte_usb_parameters.rebootFtm)) {
 		strings_dev[STRING_SERIAL_IDX].id = 0;
 		device_desc.iSerialNumber = 0;
@@ -2267,14 +2268,18 @@ static struct device_attribute dev_attr_serial_xport_names =
 				serial_xport_names_show,
 				serial_xport_names_store);
 
-/* init serial transports from init.qcom.usb.rc. */
-static char serial_transports_init[32];
+/* Init serial transports from init.vendor.usb.rc, at_port_mod. */
+#define SERIAL_TRANSPORTS_INIT_TIMEOUT msecs_to_jiffies(5000)
+#define DEFAULT_SERIAL_TRANSPORTS "char_bridge,tty,tty"
+static DECLARE_COMPLETION(serial_transports_init);
+static char serial_transports_types[32] = {'\0'};
 static ssize_t transports_init_store(
-		struct device *device, struct device_attribute *attr,
+		struct device *pdev, struct device_attribute *attr,
 		const char *buff, size_t size)
 {
-	strlcpy(serial_transports_init, buff, sizeof(serial_transports_init));
-
+	strlcpy(serial_transports_types, buff, sizeof(serial_transports_types));
+	complete(&serial_transports_init);
+	pr_info("%s : %s\n", __func__, serial_transports_types);
 	return size;
 }
 
@@ -2289,7 +2294,7 @@ static struct device_attribute *serial_function_attributes[] = {
 					&dev_attr_is_connected_flag,
 					&dev_attr_dun_w_softap_enable,
 					&dev_attr_dun_w_softap_active,
-					&dev_attr_transports_init,
+					&dev_attr_transports_init, /* at_port_mod. */
 					NULL };
 
 static int serial_function_init(struct android_usb_function *f,
@@ -2331,10 +2336,21 @@ static int serial_function_bind_config(struct android_usb_function *f,
 
 	/* Init serial transports, as transports type
 	can not be changed twice, at_port_mod. */
-	if (!serial_initialized)
-	     strlcpy(buf, serial_transports_init, sizeof(buf));
-	else
-	     strlcpy(buf, serial_transports, sizeof(buf));
+	if (!serial_initialized) {
+		if (serial_transports_types[0] != '\0') {
+			strlcpy(buf, serial_transports_types, sizeof(buf));
+		} else {
+			pr_info("wait for serial_transports_init.\n");
+			err = wait_for_completion_timeout(&serial_transports_init,
+				SERIAL_TRANSPORTS_INIT_TIMEOUT);
+			if (!err) {
+				pr_warn("timeout waiting for serial transports init\n");
+				strlcpy(buf, DEFAULT_SERIAL_TRANSPORTS, sizeof(buf));
+			} else
+				strlcpy(buf, serial_transports_types, sizeof(buf));
+		}
+	} else
+		strlcpy(buf, serial_transports, sizeof(buf));
 
 	b = strim(buf);
 
@@ -2404,7 +2420,8 @@ static int serial_function_bind_config(struct android_usb_function *f,
 			goto err_gser_usb_get_function;
 		}
 	}
-	/* ports need to be updated when first enumerating ports. */
+	/* Get real ports number, as it has replaced serial_transports with
+	serial_transports_types if !serial_initialized, at_port_mod. */
 	strlcpy(buf, serial_transports, sizeof(buf));
 	ports = 0;
 	b = strim(buf);
@@ -3989,7 +4006,7 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 		return -ENODEV;
 
 	/* For usbmanutag. */
-	if (is_pid_configed_from_file() && !zte_usb_parameters.forceSwitch)
+	if (is_usb_factory_mode() && !zte_usb_parameters.forceSwitch)
 		return -EBUSY;
 
 	mutex_lock(&dev->mutex);
