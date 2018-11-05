@@ -270,6 +270,7 @@ static int ak4962_codec_enable_slimtx(struct snd_soc_dapm_widget *w,
 static int ak49xx_bandswitch_set(struct snd_soc_codec *codec, int howtochange);
 
 static int	ak4962_dsp_mode = 0;
+static int	ak4962_dsp_sync_domain = 0;
 static int	internal_rx_gain = 0;
 static int	internal_mic_gain = 0;
 static int	hpfeedback_mic_gain = 0;
@@ -287,6 +288,11 @@ static int br_extra_mode = 0;
 static int karaoke_mic_gain = 0;	/* add by shengguanghui for karaoke 20150606 */
 static int ak4962_gain_set_switch = 0;
 int ak4962_hp_impedance_value = 0;
+
+static bool key_media_press = 0;
+static bool key_volumeup_press = 0;
+static bool key_volumedown_press = 0;
+
 
 /* from 0dB ~ +20dB */
 static const u32 mic_gain_table[21] = {
@@ -861,18 +867,18 @@ static void ak4962_work_br(struct work_struct *work)
 	int report;
 	struct delayed_work *dw = to_delayed_work(work);
 
-	pr_info("\t----------[K4962] %s(%d)ENTER work_br\n", __func__, __LINE__);
+	pr_debug("\t----------[K4962] %s(%d)ENTER work_br\n", __func__, __LINE__);
 	ak4962 = container_of(dw, struct ak4962_priv, work_br);
 	codec = ak4962->codec;
 
 	fifo_len = kfifo_len(&ak4962->fifo_br);
-	pr_info("\t----------[K4962] %s(%d)1: fifo_len=%ld\n", __func__, __LINE__, fifo_len);
+	pr_debug("\t----------[K4962] %s(%d)1: fifo_len=%ld\n", __func__, __LINE__, fifo_len);
 
        /* while (0) { */
 	while (fifo_len > 0) {
 	/* ret = kfifo_out(&ak4962->fifo_br, &fifo_val,sizeof(fifo_val)); */
 		ret = kfifo_get(&ak4962->fifo_br, &fifo_val);
-		pr_info("\t----------[K4962] %s(%d)fifo_val=%d\n", __func__, __LINE__, fifo_val);
+		pr_debug("\t----------[K4962] %s(%d)fifo_val=%d\n", __func__, __LINE__, fifo_val);
 		if (ret == 0) {
 			pr_info("\t----------[K4962] %s(%d)kfifo is empty\n", __func__, __LINE__);
 		}
@@ -898,7 +904,7 @@ static void ak4962_work_br(struct work_struct *work)
 			break;
 		}
 
-		pr_info("\t-------[K4962] %s(%d)report=%d\n", __func__, __LINE__, report);
+		pr_debug("\t-------[K4962] %s(%d)report=%d\n", __func__, __LINE__, report);
 
 		val = snd_soc_read(codec, JACK_DETECTION_STATUS);	/* JDS read */
 
@@ -919,7 +925,7 @@ static void ak4962_work_br(struct work_struct *work)
 				dev_info(codec->dev, "%s: report %d\n", __func__, report);
 
 				d2_2 = get_dtime();
-				pr_info("\t*******[AK4962] %s(%d)(push_report)d2_2=%lu\n", __func__,
+				pr_debug("\t*******[AK4962] %s(%d)(push_report)d2_2=%lu\n", __func__,
 						__LINE__, d2_2);
 
 			} else {	/* release */
@@ -936,16 +942,16 @@ static void ak4962_work_br(struct work_struct *work)
 				dev_info(codec->dev, "%s: report 0\n", __func__);
 
 				d3_2 = get_dtime();
-				pr_info("\t*******[AK4962] %s(%d)(release_report)d3_2=%lu\n", __func__,
+				pr_debug("\t*******[AK4962] %s(%d)(release_report)d3_2=%lu\n", __func__,
 						__LINE__, d3_2);
 			}
 		} else {
 			kfifo_reset_out(&ak4962->fifo_br);
-			pr_info("\t*******[AK4962] %s(%d)JDS=0 loop\n", __func__, __LINE__);
+			pr_debug("\t*******[AK4962] %s(%d)JDS=0 loop\n", __func__, __LINE__);
 		}
 
 		fifo_len = kfifo_len(&ak4962->fifo_br);
-		pr_info("\t----------[K4962] %s(%d)while loop: fifo_len=%ld\n", __func__, __LINE__, fifo_len);
+		pr_debug("\t----------[K4962] %s(%d)while loop: fifo_len=%ld\n", __func__, __LINE__, fifo_len);
 	}	/* while close; fifo_len == 0 */
 
 	br_work = 0;
@@ -954,7 +960,7 @@ static void ak4962_work_br(struct work_struct *work)
 	}
 	d4 = get_dtime();
 
-	pr_err("[LHS] %s line %d : out!\n", __func__, __LINE__);
+	pr_debug("[LHS] %s line %d : out!\n", __func__, __LINE__);
 }
 
 #if 0
@@ -2736,8 +2742,10 @@ static const struct soc_enum srcco_sync_domain =
 static const struct soc_enum srcdo_sync_domain =
 	SOC_ENUM_SINGLE(SYNC_DOMAIN_SELECTOR8, 0, 11, sync_domain_text);
 
+/*
 static const struct soc_enum dsp_sync_domain =
 	SOC_ENUM_SINGLE(SYNC_DOMAIN_SELECTOR5, 0, 11, sync_domain_text);
+*/
 
 static const struct soc_enum dspo2_sync_domain =
 	SOC_ENUM_SINGLE(SYNC_DOMAIN_SELECTOR6, 4, 11, sync_domain_text);
@@ -2761,8 +2769,43 @@ static const char * const hp_power_mode_text[] = {
 	"HiFi", "LowPower",
 };
 
+static const struct soc_enum sync_domain_enum[] = {
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(sync_domain_text), sync_domain_text),
+};
+
 static const struct soc_enum hp_power_mode_enum =
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(hp_power_mode_text), hp_power_mode_text);	/* rev0.16 */
+
+static int ak4962_get_dsp_sync_domain(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = ak4962_dsp_sync_domain;
+	return 0;
+}
+
+static int ak4962_set_dsp_sync_domain(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct ak4962_priv *ak4962 = snd_soc_codec_get_drvdata(codec);
+	int new_dsp_sync_domain = ucontrol->value.integer.value[0];
+
+	if (ak4962_dsp_sync_domain == new_dsp_sync_domain) {
+		return 0;
+	}
+
+	if ((new_dsp_sync_domain == DSP_SYNC_DOMAIN_OFF) &&
+		(ak4962->ak4962_dsp_downlink_status == 1 ||
+			ak4962->ak4962_dsp_uplink_status == 1)) {
+		 return 0;
+	}
+
+	snd_soc_write(codec, SYNC_DOMAIN_SELECTOR5, new_dsp_sync_domain);
+	ak4962_dsp_sync_domain = new_dsp_sync_domain;
+
+	return 0;
+}
+ /* rev0.7 */
 
 /* rev0.16 */
 static int ak4962_get_hp_power_mode(struct snd_kcontrol *kcontrol,
@@ -2899,6 +2942,9 @@ static int ak4962_set_dsp_downlink_status(struct snd_kcontrol *kcontrol,
 
 		ak4962_dsp_mode = DSP_MODE_OFF;
 		snd_soc_update_bits(codec, FLOW_CONTROL_1, 0x03, 0x00);
+
+		ak4962_dsp_sync_domain = DSP_SYNC_DOMAIN_OFF;
+		snd_soc_write(codec, SYNC_DOMAIN_SELECTOR5, 0x00);
 		ak4962->state = AK4962_IDLE;
 	}
 
@@ -2954,6 +3000,9 @@ static int ak4962_set_dsp_uplink_status(struct snd_kcontrol *kcontrol,
 
 		ak4962_dsp_mode = DSP_MODE_OFF;
 		snd_soc_update_bits(codec, FLOW_CONTROL_1, 0x03, 0x00);
+
+		ak4962_dsp_sync_domain = DSP_SYNC_DOMAIN_OFF;
+		snd_soc_write(codec, SYNC_DOMAIN_SELECTOR5, 0x00);
 		ak4962->state = AK4962_IDLE;
 	}
 
@@ -4181,7 +4230,7 @@ static const struct snd_kcontrol_new ak4962_snd_controls[] = {
 
 	SOC_ENUM("SRCDO Sync Domain", srcdo_sync_domain),
 
-	SOC_ENUM("DSP Sync Domain", dsp_sync_domain),
+	/*SOC_ENUM("DSP Sync Domain", dsp_sync_domain),*/
 
 	SOC_ENUM("DSPO2 Sync Domain", dspo2_sync_domain),
 
@@ -4194,6 +4243,9 @@ static const struct snd_kcontrol_new ak4962_snd_controls[] = {
 	SOC_ENUM("PORT3 Sync Domain", port3_sync_domain),
 
 	SOC_ENUM("PORT4 Sync Domain", port4_sync_domain),
+
+	SOC_ENUM_EXT("DSP Sync Domain", sync_domain_enum[0],
+			ak4962_get_dsp_sync_domain, ak4962_set_dsp_sync_domain),
 
 	SOC_ENUM_EXT("HP Power Mode", hp_power_mode_enum,
 			ak4962_get_hp_power_mode, ak4962_set_hp_power_mode),	/*rev0.16*/
@@ -4756,7 +4808,7 @@ static u8 ldo3_status;
 static int ak4962_change_charge_pump_2(struct snd_soc_codec *codec,
 		int event)
 {
-	pr_info("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
+	pr_debug("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
 	pr_debug("%s %d\n", __func__, event);
 
 	switch (event) {
@@ -4777,7 +4829,7 @@ static int ak4962_change_charge_pump_2(struct snd_soc_codec *codec,
 static int ak4962_change_ldo_3(struct snd_soc_codec *codec,
 		int event)
 {
-	pr_info("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
+	pr_debug("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
 	pr_debug("%s %d\n", __func__, event);
 
 	switch (event) {
@@ -4811,7 +4863,7 @@ static int ak4962_codec_enable_dac(struct snd_soc_dapm_widget *w,
 	}
 
 	dac_setting = (1 << ((dac - 1) << 1));
-	pr_err("[LHS][AK4962] %s 1:dac_status=%d\n", __func__, dac_status);
+	pr_debug("[LHS][AK4962] %s 1:dac_status=%d\n", __func__, dac_status);
 	pr_debug("%s %d\n", __func__, event);
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
@@ -4840,7 +4892,7 @@ static int ak4962_codec_enable_dac(struct snd_soc_dapm_widget *w,
 		share_wait_time = 0;
 		break;
 	}
-	pr_err("[LHS][AK4962] %s 2:dac_status=%d\n", __func__, dac_status);
+	pr_debug("[LHS][AK4962] %s 2:dac_status=%d\n", __func__, dac_status);
 	return 0;
 }
 
@@ -4859,7 +4911,7 @@ static int ak4962_codec_enable_hp(struct snd_soc_dapm_widget *w,
 		usleep_range(4500, 4600);
 
 	/* rev0.15 */
-		while ((snd_soc_read(codec, IMPEDANCE_DETECTION) & 0x80) > 0) {
+		while ((snd_soc_read(codec, IMPEDANCE_DETECTION) & 0xE0) == 0x80) {
 		       pr_info("\t[AK4962] %s(%d)*****IMP DET wait loop******\n", __func__, __LINE__);
 			usleep_range(10000, 11000);
 		}
@@ -4891,7 +4943,7 @@ static int ak4962_codec_enable_hp(struct snd_soc_dapm_widget *w,
 	break;
 	}
 
-	pr_err("[LHS][AK4962] %s 2:hp_status=%d\n", __func__, hp_status);
+	pr_debug("[LHS][AK4962] %s 2:hp_status=%d\n", __func__, hp_status);
 
 	return 0;
 }
@@ -5211,7 +5263,7 @@ static u8 charge_pump3_status;
 static int ak4962_change_charge_pump_3(struct snd_soc_codec *codec,
 		int event)
 {
-	pr_info("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
+	pr_debug("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
 	pr_debug("%s %d\n", __func__, event);
 
 	switch (event) {
@@ -5234,7 +5286,7 @@ static int ak4962_codec_enable_charge_pump_3(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_codec *codec = w->codec;
 
-	pr_info("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
+	pr_debug("\t********[AK4962] %s(%d) event=%d\n", __func__, __LINE__, event);
 	pr_debug("%s %d\n", __func__, event);
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
@@ -5430,7 +5482,7 @@ static int ak4962_codec_pll_setup(struct snd_soc_dapm_widget *w,
 	struct snd_soc_codec *codec = w->codec;
 	struct ak4962_priv *ak4962 = snd_soc_codec_get_drvdata(codec);
 
-	pr_info("\t[AK4962] %s(%d) 1:pll_status=%d\n", __func__, __LINE__, pll_status);
+	pr_debug("\t[AK4962] %s(%d) 1:pll_status=%d\n", __func__, __LINE__, pll_status);
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
@@ -5466,7 +5518,7 @@ static int ak4962_codec_pll_setup(struct snd_soc_dapm_widget *w,
 		break;
 	}
 
-	pr_info("\t[AK4962] %s(%d) 2:pll_status=%d\n", __func__, __LINE__, pll_status);
+	pr_debug("\t[AK4962] %s(%d) 2:pll_status=%d\n", __func__, __LINE__, pll_status);
 
 	return 0;
 }
@@ -7556,6 +7608,18 @@ static int hp_check;
 /* zte jjp  add headset detect /proc/hs 2015-03-30 start */
 int g_hs_state = 0;
 static ssize_t hs_read(struct file *file, char __user *buf,
+				    size_t count, loff_t *pos)
+{
+	int ret = 0;
+	char buffer[32] = {0};
+
+	ret = scnprintf(buffer, 32, "%d\n", g_hs_state);
+	ret = simple_read_from_buffer(buf, count, pos, buffer, ret);
+
+	return ret;
+}
+/*
+static ssize_t hs_read(struct file *file, char __user *buf,
 				    size_t len, loff_t *offset)
 {
 	ssize_t count = 0;
@@ -7568,7 +7632,7 @@ static ssize_t hs_read(struct file *file, char __user *buf,
 		*offset += count;
 	}
 	return count;
-}
+}*/
 static const struct file_operations hs_proc_fops = {
 	.owner = THIS_MODULE,
 	.read = hs_read,
@@ -7594,7 +7658,7 @@ static irqreturn_t ak4962_jde_irq(int irq, void *data)
 		pr_err("%s: CLRJDE=H  last_report_sw=%x\n ", __func__, last_report_sw);
 		snd_soc_update_bits(codec, DETECTION_EVENT, 0x01, 0x01);
 		if (!last_report_sw) {
-			pr_err("%s: last_report_sw == 0\n", __func__);
+			pr_debug("%s: last_report_sw == 0\n", __func__);
 			mic_det_repeat = 0;
 			mic_det_counter = 0;
 
@@ -7682,6 +7746,25 @@ static irqreturn_t ak4962_jde_irq(int irq, void *data)
 		if (last_report_sw != 0) {
 			report = 0;
 
+		if (key_volumedown_press == 1) {
+			input_event(priv->mbhc_cfg.btn_idev, EV_MSC, MSC_SCAN, 0);
+			input_report_key(priv->mbhc_cfg.btn_idev, KEY_VOLUMEDOWN, 0);
+			input_sync(priv->mbhc_cfg.btn_idev);
+			snd_soc_update_bits(codec, MIC_DETECTION_LEVEL, 0xFF, 0x44);	/* MDLVL < 26.6% */
+			last_report_key = 0;
+			key_volumedown_press = 0;
+			pr_err("[LHS] %s line %d : <<<< report = %d  KEY_VOLUMEDOWN release!\n",
+				__func__, __LINE__, report);
+		} else if (key_volumeup_press == 1) {
+			input_event(priv->mbhc_cfg.btn_idev, EV_MSC, MSC_SCAN, 1);
+			input_report_key(priv->mbhc_cfg.btn_idev, KEY_VOLUMEUP, 0);
+			input_sync(priv->mbhc_cfg.btn_idev);
+			snd_soc_update_bits(codec, MIC_DETECTION_LEVEL, 0xFF, 0x44);	/* MDLVL < 26.6% */
+			last_report_key = 0;
+			key_volumeup_press = 0;
+			pr_err("[LHS] %s line %d : <<<< report = %d  KEY_VOLUMEUP release!\n",
+				__func__, __LINE__, report);
+		}
 #ifdef CONFIG_SWITCH
 			if (last_report_sw) {
 					input_report_switch(priv->mbhc_cfg.btn_idev, SW_HEADPHONE_INSERT, 0);
@@ -7692,13 +7775,16 @@ static irqreturn_t ak4962_jde_irq(int irq, void *data)
 			if (last_report_sw == BIT_HEADSET_DUAL_MIC) {
 				input_report_switch(priv->mbhc_cfg.btn_idev, SW_MICROPHONE2_INSERT, 0);
 			}
+			if (last_report_sw == BIT_HEADSET_UNSUPPORTED) {
+				input_report_switch(priv->mbhc_cfg.btn_idev, SW_UNSUPPORT_INSERT, 0);
+			}
 			input_sync(priv->mbhc_cfg.btn_idev);
 #endif
 		}
 	}
 
 	if (report != last_report_sw) {
-	       pr_info("\t[AK4962] %s(%d)\n", __func__, __LINE__);
+	       pr_debug("\t[AK4962] %s(%d)\n", __func__, __LINE__);
 #ifdef CONFIG_SWITCH
 		switch_set_state(priv->mbhc_cfg.h2w_sdev, report);
 #else
@@ -7723,11 +7809,11 @@ static irqreturn_t ak4962_sare_irq(int irq, void *data)
 	int val2, val3, val4;		/* rev0.15 */
 	int report = last_report_sw;
 
-	pr_err("%s: mic_det_repeat=%d, mic_det_counter=%d\n",
+	pr_debug("%s: mic_det_repeat=%d, mic_det_counter=%d\n",
 			__func__, mic_det_repeat, mic_det_counter);
-	pr_err("%s: dual_mic_det_repeat=%d, dual_mic_det_counter=%d\n",
+	pr_debug("%s: dual_mic_det_repeat=%d, dual_mic_det_counter=%d\n",
 			__func__, dual_mic_det_repeat, dual_mic_det_counter);
-	pr_err("%s: lrmg_det=%d, lrmg_mic_det_repeat=%d, lrmg_mic_det_counter=%d\n",
+	pr_debug("%s: lrmg_det=%d, lrmg_mic_det_repeat=%d, lrmg_mic_det_counter=%d\n",
 			__func__, lrmg_det, lrmg_mic_det_repeat, lrmg_mic_det_counter);
 
 	val = snd_soc_read(codec, SAR_DATA_VALUE);
@@ -7742,7 +7828,7 @@ static irqreturn_t ak4962_sare_irq(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
-	pr_err("%s: SARD = 0x%x\n", __func__, val);
+	pr_debug("%s: SARD = 0x%x\n", __func__, val);
 
 	if (lrmg_det == 1) {
 		if (val > LRMG_MIC_DETECTION_LEVEL_VALID) {
@@ -7829,7 +7915,7 @@ static irqreturn_t ak4962_sare_irq(int irq, void *data)
 					input_report_switch(priv->mbhc_cfg.btn_idev, SW_HEADPHONE_INSERT, 1);
 					input_sync(priv->mbhc_cfg.btn_idev);
 #else
-					report = SND_JACK_HEADPHONE;	/* include/sound/jack.hで定義；1 */
+					report = SND_JACK_HEADPHONE;	/* include/sound/jack.h */
 #endif
 					pr_info("%s: headphone is detected\n", __func__);
 
@@ -7937,9 +8023,9 @@ static irqreturn_t ak4962_sare_irq(int irq, void *data)
 		if (d0 < 0) {
 			d0 = 0;
 		}
-		pr_err("%s: ******d0=%ld\n", __func__, d0);
+		pr_debug("%s: ******d0=%ld\n", __func__, d0);
 
-		pr_err("\t[AK4962] %s(%d)DAC1/2,SDTO check: val2=%d, val3=%d, val4=%d\n",
+		pr_debug("\t[AK4962] %s(%d)DAC1/2,SDTO check: val2=%d, val3=%d, val4=%d\n",
 				__func__, __LINE__, val2, val3, val4);	/*rev0.15*/
 
 		if ((val2 == 0) && (val3 == 0) && (val4 == 0)) {
@@ -8196,6 +8282,7 @@ static irqreturn_t ak4962_ide_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static int old_mic_level = -1;
 static irqreturn_t ak4962_mice_irq(int irq, void *data)
 {
 	struct ak4962_priv *priv = data;
@@ -8208,7 +8295,7 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 	test_0x3 = snd_soc_read(codec, POWER_MANAGEMENT_1);
 	test_0x5 = snd_soc_read(codec, POWER_MANAGEMENT_3);
 	test_0x6 = snd_soc_read(codec, POWER_MANAGEMENT_4);
-	pr_err("%s: AKM test: rev0.16: 0x3=0x%x, 0x5=0x%x, 0x6=0x%x\n",
+	pr_debug("%s: AKM test: rev0.16: 0x3=0x%x, 0x5=0x%x, 0x6=0x%x\n",
 			__func__, test_0x3, test_0x5, test_0x6);
 
 	d1 = get_dtime();
@@ -8219,7 +8306,7 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
-	pr_err("%s: Entry\n", __func__);
+	pr_debug("%s: Entry\n", __func__);
 	if (last_report_sw != 0) {
 		mic_level = snd_soc_read(codec, SAR_DATA_VALUE);	/* SARD read */
 		if (mic_level < 0) {
@@ -8227,8 +8314,10 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 			dev_err(codec->dev, "Failed to read SAR_DATA_VALUE: %d\n", mic_level);
 			return IRQ_HANDLED;
 		}
-
-		pr_err("%s: mic_level=%d\n", __func__, mic_level);
+		if(mic_level != old_mic_level) {
+			pr_err("%s: mic_level=%d\n", __func__, mic_level);
+			old_mic_level = mic_level;
+		}
 
 		if (mic_level < KEY_MEDIA_THRESHOLD) {
 			if (last_detect_key == KEY_MEDIA) {
@@ -8311,10 +8400,18 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 		report = 0;
 	}
 
-	pr_err("[LHS] %s line %d : last_detect = %d, key_det_repeat = %d\n",
+	pr_debug("[LHS] %s line %d : last_detect = %d, key_det_repeat = %d\n",
 			__func__, __LINE__, last_detect_key, key_det_repeat);
 #ifdef CONFIG_SWITCH
 	if (report != 0 && last_report_key == 0) {
+		if (report == KEY_MEDIA) {
+			key_media_press = 1;
+		} else if (report == KEY_VOLUMEUP) {
+			key_volumeup_press = 1;
+		} else if (report == KEY_VOLUMEDOWN) {
+			key_volumedown_press = 1;
+		}
+
 		last_report_key = report;
 
 		if (report == KEY_MEDIA) {
@@ -8332,11 +8429,11 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 		}
 
 		d2_1 = get_dtime();
-		pr_info("\t*******[AK4962] %s(%d)(push_key time)d2_1=%ld\n",
+		pr_debug("\t*******[AK4962] %s(%d)(push_key time)d2_1=%ld\n",
 				__func__, __LINE__, d2_1);
-		pr_info("\t*******[AK4962] %s(%d)push: fifo_len: %u\n", __func__,
+		pr_debug("\t*******[AK4962] %s(%d)push: fifo_len: %u\n", __func__,
 				__LINE__, kfifo_len(&priv->fifo_br));
-		pr_info("\t*******[AK4962] %s(%d)test d4=%ld\n",
+		pr_debug("\t*******[AK4962] %s(%d)test d4=%ld\n",
 				__func__, __LINE__, d4);
 
 		if ((d2_1 - d4) > 300) {
@@ -8346,13 +8443,13 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 	}
 
 		if ((br_work == 0) && (br_extra_mode == 0)) {
-			pr_err("[LHS] %s line %d : queue_delayed_work!\n", __func__, __LINE__);
+			pr_debug("[LHS] %s line %d : queue_delayed_work!\n", __func__, __LINE__);
 			queue_delayed_work(priv->workqueue_br, &priv->work_br, msecs_to_jiffies(300));
 			br_work = 1;
 		}
 
 		if (br_extra_mode) {
-			pr_info("\t*******[AK4962] %s(%d)EXTRA MODE\n", __func__, __LINE__);
+			pr_debug("\t*******[AK4962] %s(%d)EXTRA MODE\n", __func__, __LINE__);
 			val = snd_soc_read(codec, JACK_DETECTION_STATUS);	/* JDS read */
 
 			if (val & 0x01) {
@@ -8371,7 +8468,7 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 								cancel_delayed_work(&priv->work_br);
 
 				d4 = get_dtime();
-				pr_info("\t--[K4962] %s(%d) d4 update at EXTRA_MODE: d4=%ld\n",
+				pr_debug("\t--[K4962] %s(%d) d4 update at EXTRA_MODE: d4=%ld\n",
 						__func__, __LINE__, d4);
 			}
 		}
@@ -8392,9 +8489,9 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 		}
 
 		d3_1 = get_dtime();
-		pr_info("\t*******[AK4962] %s(%d)(release_bt)d3_1=%ld\n",
+		pr_debug("\t*******[AK4962] %s(%d)(release_bt)d3_1=%ld\n",
 				__func__, __LINE__, d3_1);
-		pr_info("\t*******[AK4962] %s(%d)release: fifo_len: %u\n",
+		pr_debug("\t*******[AK4962] %s(%d)release: fifo_len: %u\n",
 				__func__, __LINE__, kfifo_len(&priv->fifo_br));
 
 		if ((br_work == 0) || br_extra_mode) {
@@ -8413,6 +8510,13 @@ static irqreturn_t ak4962_mice_irq(int irq, void *data)
 				input_sync(priv->mbhc_cfg.btn_idev);
 				dev_info(codec->dev, "%s: report %d\n", __func__, report);
 				kfifo_reset_out(&priv->fifo_br);
+			}
+			if (report == KEY_MEDIA) {
+				key_media_press = 0;
+			} else if (report == KEY_VOLUMEUP) {
+				key_volumeup_press = 0;
+			} else if (report == KEY_VOLUMEDOWN) {
+				key_volumedown_press = 0;
 			}
 		}
 		last_report_key = report;
@@ -8498,6 +8602,7 @@ int ak4962_hs_detect(struct snd_soc_codec *codec,
 	input_set_capability(ak4962->mbhc_cfg.btn_idev, EV_SW, SW_HEADPHONE_INSERT);
 	input_set_capability(ak4962->mbhc_cfg.btn_idev, EV_SW, SW_MICROPHONE_INSERT);
 	input_set_capability(ak4962->mbhc_cfg.btn_idev, EV_SW, SW_MICROPHONE2_INSERT);
+	input_set_capability(ak4962->mbhc_cfg.btn_idev, EV_SW, SW_UNSUPPORT_INSERT);
 
 	rc = input_register_device(ak4962->mbhc_cfg.btn_idev);
 	if (rc != 0) {

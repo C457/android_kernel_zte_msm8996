@@ -238,9 +238,17 @@ enum fg_mem_data_index {
 static struct fg_mem_setting settings[FG_MEM_SETTING_MAX] = {
 	/*       ID                    Address, Offset, Value*/
 	SETTING(SOFT_COLD,       0x454,   0,      100),
+#ifdef CONFIG_BOARD_FUJISAN
+	SETTING(SOFT_HOT,        0x454,   1,      420),
+#else
 	SETTING(SOFT_HOT,        0x454,   1,      450),
+#endif
 	SETTING(HARD_COLD,       0x454,   2,      0),
+#ifdef CONFIG_BOARD_FUJISAN
+	SETTING(HARD_HOT,        0x454,   3,      450),
+#else
 	SETTING(HARD_HOT,        0x454,   3,      550),
+#endif
 	SETTING(RESUME_SOC,      0x45C,   1,      99),
 	SETTING(BCL_LM_THRESHOLD, 0x47C,   2,      50),
 	SETTING(BCL_MH_THRESHOLD, 0x47C,   3,      752),
@@ -310,7 +318,7 @@ static struct fg_mem_data fg_backup_regs[FG_BACKUP_MAX] = {
 	BACKUP(MAH_TO_SOC,	0x4A0,   0,      4,     -EINVAL),
 };
 
-static int fg_debug_mask;
+static int fg_debug_mask = FG_STATUS | FG_IRQS | FG_AGING;
 module_param_named(
 	debug_mask, fg_debug_mask, int, S_IRUSR | S_IWUSR
 );
@@ -326,8 +334,12 @@ module_param_named(
 );
 
 char *fg_batt_type_default = "zte_p894a01_3000mah";
-#if defined(CONFIG_BOARD_CANDICE)
+#if defined(CONFIG_BOARD_CANDICE) || defined(CONFIG_BOARD_FUJISAN)
+#ifdef ZTE_BAT_2930mAh_DOCOMO
+char *fg_batt_type = "ZTE_BATTERY_DATA_ID_3";
+#else
 char *fg_batt_type = "ZTE_BATTERY_DATA_ID_2";
+#endif
 #else
 char *fg_batt_type = "ZTE_BATTERY_DATA_ID_1";
 #endif
@@ -497,11 +509,17 @@ struct fg_chip {
 	spinlock_t		sec_access_lock;
 	struct mutex		rw_lock;
 	struct mutex		sysfs_restart_lock;
+#ifdef CONFIG_BOARD_FUJISAN
+	struct mutex		set_safe_chg_current_lock;
+#endif
 	struct delayed_work	batt_profile_init;
 	struct work_struct	dump_sram;
 	struct work_struct	status_change_work;
 	struct work_struct	cycle_count_work;
 	struct work_struct	battery_age_work;
+#ifdef CONFIG_BOARD_FUJISAN
+	struct work_struct	vbatt_set_fcc_work;
+#endif
 	struct work_struct	update_esr_work;
 	struct work_struct	set_resume_soc_work;
 	struct work_struct	rslow_comp_work;
@@ -519,6 +537,9 @@ struct fg_chip {
 	struct fg_wakeup_source	resume_soc_wakeup_source;
 	struct fg_wakeup_source	gain_comp_wakeup_source;
 	struct fg_wakeup_source	capacity_learning_wakeup_source;
+#ifdef CONFIG_BOARD_FUJISAN
+	struct fg_wakeup_source	vbatt_set_fcc_work_wakeup_source;
+#endif
 	bool			first_profile_loaded;
 	struct fg_wakeup_source	update_temp_wakeup_source;
 	struct fg_wakeup_source	update_sram_wakeup_source;
@@ -570,6 +591,7 @@ struct fg_chip {
 	int			ocv_junction_p2p3;
 	int			nom_cap_uah;
 	int			actual_cap_uah;
+	int			rated_cap_mah;
 	int			status;
 	int			prev_status;
 	int			health;
@@ -647,6 +669,10 @@ struct fg_chip {
 	bool			*batt_range_ocv;
 	int			*batt_range_pct;
 };
+
+#ifdef CONFIG_BOARD_FUJISAN
+struct fg_chip *zte_fg_chip = NULL;
+#endif
 
 /* FG_MEMIF DEBUGFS structures */
 #define ADDR_LEN	4	/* 3 byte address + 1 space character */
@@ -1355,10 +1381,15 @@ static int fg_check_ima_exception(struct fg_chip *chip, bool check_hw_sts)
 
 	if (run_err_clr_seq) {
 		ret = fg_run_iacs_clear_sequence(chip);
-		if (!ret)
-			return -EAGAIN;
-		else
+		if (ret) {
 			pr_err("Error clearing IMA exception ret=%d\n", ret);
+			return ret;
+		}
+
+		if (check_hw_sts)
+			return 0;
+		else
+			return -EAGAIN;
 	}
 
 	return rc;
@@ -2258,6 +2289,7 @@ static int get_prop_capacity(struct fg_chip *chip)
 	bool vbatt_low_sts;
 	u8 buffer[3];
 	int capacity = 0;
+	static int last_msoc = -1;
 
 	fg_mem_lock(chip);
 	rc = fg_mem_read(chip, buffer, 0x56C, 3, 1, 0);
@@ -2274,8 +2306,10 @@ static int get_prop_capacity(struct fg_chip *chip)
 				FULL_SOC_RAW - 2) + 1;
 	}
 
-	if (chip->battery_missing)
+	if (chip->battery_missing) {
+		pr_info("battery_missing capacity = %d\n", MISSING_CAPACITY);
 		return MISSING_CAPACITY;
+	}
 
 	if (!chip->profile_loaded && !chip->use_otp_profile)
 		return DEFAULT_CAPACITY;
@@ -2319,10 +2353,16 @@ static int get_prop_capacity(struct fg_chip *chip)
 		return FULL_CAPACITY;
 	}
 
-	capacity = DIV_ROUND_CLOSEST((msoc - 1) * (FULL_CAPACITY - 2),
+	capacity = DIV_ROUND_CLOSEST((msoc - 1) * (FULL_CAPACITY + 1),
 			FULL_SOC_RAW - 2) + 1;
 	if (capacity >= FULL_CAPACITY)
 		capacity = FULL_CAPACITY;
+
+	if (msoc != last_msoc) {
+		last_msoc = msoc;
+		pr_info("capacity: %d, raw: %d\n", capacity, msoc);
+	}
+
 	return capacity;
 }
 
@@ -2553,6 +2593,7 @@ static u16 float_encode(int64_t uval)
 static int fg_is_batt_id_valid(struct fg_chip *chip)
 {
 	u8 fg_batt_sts;
+	static u8 pre_sts = 0;
 	int rc;
 
 	rc = fg_read(chip, &fg_batt_sts,
@@ -2563,7 +2604,12 @@ static int fg_is_batt_id_valid(struct fg_chip *chip)
 		return rc;
 	}
 
-	pr_debug("fg batt sts 0x%x\n", fg_batt_sts);
+	if (fg_debug_mask & FG_IRQS) {
+		if (pre_sts != fg_batt_sts) {
+			pre_sts = fg_batt_sts;
+			pr_info("fg batt sts 0x%x\n", fg_batt_sts);
+		}
+	}
 
 	return (fg_batt_sts & BATT_IDED) ? 1 : 0;
 }
@@ -2598,6 +2644,7 @@ static int update_sram_data(struct fg_chip *chip, int *resched_ms)
 	int i, j, rc = 0;
 	u8 reg[4];
 	int64_t temp;
+	static int64_t pre_cc_data = 0;
 	int battid_valid = fg_is_batt_id_valid(chip);
 
 	fg_stay_awake(&chip->update_sram_wakeup_source);
@@ -2673,7 +2720,7 @@ static int update_sram_data(struct fg_chip *chip, int *resched_ms)
 	if (fg_reset_on_lockup && !chip->ima_error_handling) {
 		if (!rc) {
 			if (fg_debug_mask & FG_STATUS)
-				pr_info("backing up SRAM registers\n");
+				pr_debug("backing up SRAM registers\n");
 			rc = fg_backup_sram_registers(chip, true);
 			if (rc) {
 				pr_err("Couldn't save sram registers\n");
@@ -2685,9 +2732,13 @@ static int update_sram_data(struct fg_chip *chip, int *resched_ms)
 					(int64_t)chip->last_soc *
 					FULL_PERCENT_28BIT, FULL_SOC_RAW);
 			}
-			if (fg_debug_mask & FG_STATUS)
-				pr_info("last_soc: %d last_cc_soc: %lld\n",
-					chip->last_soc, chip->last_cc_soc);
+			if (fg_debug_mask & FG_STATUS) {
+				if (pre_cc_data != chip->last_cc_soc) {
+					pre_cc_data = chip->last_cc_soc;
+					pr_info("last_soc: %d last_cc_soc: %lld\n",
+						chip->last_soc, chip->last_cc_soc);
+				}
+			}
 		} else {
 			pr_err("update_sram failed\n");
 			goto out;
@@ -2730,7 +2781,7 @@ try_again:
 	}
 
 	if (fg_debug_mask & FG_STATUS)
-		pr_info("current: %d, prev: %d\n", beat_count,
+		pr_debug("current: %d, prev: %d\n", beat_count,
 			chip->last_beat_count);
 
 	if (chip->last_beat_count == beat_count) {
@@ -3599,6 +3650,7 @@ static bool is_battery_missing(struct fg_chip *chip)
 		return false;
 	}
 
+	pr_info("fg_batt_sts = %d\n", fg_batt_sts);
 	return (fg_batt_sts & BATT_MISSING_STS) ? true : false;
 }
 
@@ -4694,7 +4746,7 @@ static int fg_power_get_property(struct power_supply *psy,
 		val->intval = chip->nom_cap_uah;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		val->intval = chip->learning_data.learned_cc_uah;
+		val->intval = chip->actual_cap_uah;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		val->intval = chip->learning_data.cc_uah;
@@ -4742,10 +4794,18 @@ static int fg_power_set_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_COOL_TEMP:
+#ifdef CONFIG_BOARD_FUJISAN
+		pr_info("Not accept user space setting of jeita cool para\n");
+#else
 		rc = set_prop_jeita_temp(chip, FG_MEM_SOFT_COLD, val->intval);
+#endif
 		break;
 	case POWER_SUPPLY_PROP_WARM_TEMP:
+#ifdef CONFIG_BOARD_FUJISAN
+		pr_info("Not accept user space setting of jeita warm para\n");
+#else
 		rc = set_prop_jeita_temp(chip, FG_MEM_SOFT_HOT, val->intval);
+#endif
 		break;
 	case POWER_SUPPLY_PROP_UPDATE_NOW:
 		if (val->intval)
@@ -5076,7 +5136,7 @@ static void cc_soc_store_work(struct work_struct *work)
 {
 	struct fg_chip *chip = container_of(work, struct fg_chip,
 					cc_soc_store_work);
-	int cc_soc_pct;
+	int cc_soc_pct, cc_soc;
 
 	if (!chip->nom_cap_uah) {
 		pr_err("nom_cap_uah zero!\n");
@@ -5084,15 +5144,15 @@ static void cc_soc_store_work(struct work_struct *work)
 		return;
 	}
 
-	cc_soc_pct = get_sram_prop_now(chip, FG_DATA_CC_CHARGE);
-	cc_soc_pct = div64_s64(cc_soc_pct * 100,
+	cc_soc = get_sram_prop_now(chip, FG_DATA_CC_CHARGE);
+	cc_soc_pct = div64_s64(cc_soc * 100,
 				chip->nom_cap_uah);
 	chip->last_cc_soc = div64_s64((int64_t)chip->last_soc *
 				FULL_PERCENT_28BIT, FULL_SOC_RAW);
 
 	if (fg_debug_mask & FG_STATUS)
-		pr_info("cc_soc_pct: %d last_cc_soc: %lld\n", cc_soc_pct,
-			chip->last_cc_soc);
+		pr_info("cc_soc_pct: %d cc_soc: %d last_cc_soc: %lld\n", cc_soc_pct,
+			cc_soc, chip->last_cc_soc);
 
 	if (fg_reset_on_lockup && (chip->cc_soc_limit_pct > 0 &&
 			cc_soc_pct >= chip->cc_soc_limit_pct)) {
@@ -5400,6 +5460,91 @@ static irqreturn_t fg_mem_avail_irq_handler(int irq, void *_chip)
 	return IRQ_HANDLED;
 }
 
+#ifdef CONFIG_BOARD_FUJISAN
+#define HIGH_VBAT_THRESHOLD_CHG_SAFE 4200000
+#define HIGH_VBAT_CLEAR 100000
+
+extern int smbchg_set_chg_current_high_vbatt(bool en);
+
+void set_safe_chg_current(void)
+{
+	int vbatt = 0;
+	int vbatt_ocv = 0;
+	int current_now = 0;
+	int rc = 0;
+	static int full_fcc_status = 0;
+	static int high_vbat_fcc_status = 0;
+
+	if (NULL == zte_fg_chip)
+		return;
+
+	vbatt = get_sram_prop_now(zte_fg_chip, FG_DATA_VOLTAGE);
+	vbatt_ocv = get_sram_prop_now(zte_fg_chip, FG_DATA_OCV);
+	current_now = get_sram_prop_now(zte_fg_chip, FG_DATA_CURRENT);
+	pr_info("vbatt:%d,vbatt_ocv:%d,current_now:%d,full_fcc_status:%d,high_vbat_fcc_status:%d\n",
+			vbatt, vbatt_ocv, current_now, full_fcc_status, high_vbat_fcc_status);
+	mutex_lock(&zte_fg_chip->set_safe_chg_current_lock);
+	if ((vbatt > HIGH_VBAT_THRESHOLD_CHG_SAFE) && (high_vbat_fcc_status == 0)) {
+		rc = smbchg_set_chg_current_high_vbatt(true);
+		if (rc) {
+			pr_err("failed to vote fcc vbatt\n");
+			mutex_unlock(&zte_fg_chip->set_safe_chg_current_lock);
+			return;
+		}
+		full_fcc_status = 0;
+		high_vbat_fcc_status = 1;
+	} else if ((vbatt <= HIGH_VBAT_THRESHOLD_CHG_SAFE - HIGH_VBAT_CLEAR) &&
+			(full_fcc_status == 0)) {
+		rc = smbchg_set_chg_current_high_vbatt(false);
+		if (rc) {
+			pr_err("failed to de-vote fcc vbat\n");
+			mutex_unlock(&zte_fg_chip->set_safe_chg_current_lock);
+			return;
+		}
+		full_fcc_status = 1;
+		high_vbat_fcc_status = 0;
+	}
+	mutex_unlock(&zte_fg_chip->set_safe_chg_current_lock);
+}
+
+static void vbatt_set_fcc_work(struct work_struct *work)
+{
+	struct fg_chip *chip = container_of(work,
+			struct fg_chip, vbatt_set_fcc_work);
+	set_safe_chg_current();
+	fg_relax(&chip->vbatt_set_fcc_work_wakeup_source);
+}
+
+#define JEITA_COOL_NARROW 10
+#define JEITA_WARM_NARROW 440
+static int jeita_warm_fujisan_orig = -1;
+static int jeita_cool_fujisan_orig = -1;
+void narrow_jeita_cool_area(void)
+{
+	if (jeita_cool_fujisan_orig == -1)
+		jeita_cool_fujisan_orig = get_prop_jeita_temp(zte_fg_chip, FG_MEM_SOFT_COLD);
+	set_prop_jeita_temp(zte_fg_chip, FG_MEM_SOFT_COLD, JEITA_COOL_NARROW);
+}
+
+void narrow_jeita_warm_area(void)
+{
+	if (jeita_warm_fujisan_orig == -1)
+		jeita_warm_fujisan_orig = get_prop_jeita_temp(zte_fg_chip, FG_MEM_SOFT_HOT);
+	set_prop_jeita_temp(zte_fg_chip, FG_MEM_SOFT_HOT, JEITA_WARM_NARROW);
+}
+
+void set_jeita_para_fujisan_default(void)
+{
+	if (jeita_cool_fujisan_orig != -1)
+		settings[FG_MEM_SOFT_COLD].value = jeita_cool_fujisan_orig;
+
+	if (jeita_warm_fujisan_orig != -1)
+		settings[FG_MEM_SOFT_HOT].value = jeita_warm_fujisan_orig;
+
+	update_jeita_setting(&zte_fg_chip->update_jeita_setting.work);
+}
+#endif
+
 static irqreturn_t fg_soc_irq_handler(int irq, void *_chip)
 {
 	struct fg_chip *chip = _chip;
@@ -5414,6 +5559,13 @@ static irqreturn_t fg_soc_irq_handler(int irq, void *_chip)
 
 	if (fg_debug_mask & FG_IRQS)
 		pr_info("triggered 0x%x\n", soc_rt_sts);
+
+#ifdef CONFIG_BOARD_FUJISAN
+	if (chip->status == POWER_SUPPLY_STATUS_CHARGING) {
+		fg_stay_awake(&chip->vbatt_set_fcc_work_wakeup_source);
+		schedule_work(&chip->vbatt_set_fcc_work);
+	}
+#endif
 
 	if (chip->dischg_gain.enable) {
 		fg_stay_awake(&chip->dischg_gain_wakeup_source);
@@ -6374,6 +6526,7 @@ static int fg_batt_profile_init(struct fg_chip *chip)
 	const char *data, *batt_type_str;
 	bool tried_again = false, vbat_in_range, profiles_same;
 	u8 reg = 0;
+	int vdiff_coefficient  = 1;
 
 wait:
 	fg_stay_awake(&chip->profile_wakeup_source);
@@ -6430,7 +6583,7 @@ wait:
 			goto no_profile;
 		}
 	}
-	pr_debug("fg_batt_type is %s\n", fg_batt_type);
+	pr_info("fg_batt_type is %s\n", fg_batt_type);
 
 	/* read rslow compensation values if they're available */
 	rc = of_property_read_u32(profile_node, "qcom,chg-rs-to-rslow",
@@ -6460,6 +6613,14 @@ wait:
 		chip->rslow_comp.chg_rslow_comp_thr = -EINVAL;
 		if (rc != -EINVAL)
 			pr_err("Could not read rslow comp thr: %d\n", rc);
+	}
+
+	rc = of_property_read_u32(profile_node, "qcom,nom-batt-capacity-mah",
+					&chip->rated_cap_mah);
+	if (rc) {
+		chip->rated_cap_mah = -EINVAL;
+		if (rc != -EINVAL)
+			pr_err("Could not read rated_cap_mah: %d\n", rc);
 	}
 
 	rc = of_property_read_u32(profile_node, "qcom,max-voltage-uv",
@@ -6523,9 +6684,21 @@ wait:
 		goto no_profile;
 	}
 
-
+	if (is_usb_present(chip)) {
+		pr_info("usb present, vbat_est_diff*3\n");
+		vdiff_coefficient = 3;
+	}
 	vbat_in_range = get_vbat_est_diff(chip)
-			< settings[FG_MEM_VBAT_EST_DIFF].value * 1000;
+			< settings[FG_MEM_VBAT_EST_DIFF].value * 1000 * vdiff_coefficient;
+
+	pr_info("fg_data_voltage:%d fg_data_cpred voltage:%d vbat_est_diff:%d vbat_in_range=%d\n",
+		fg_data[FG_DATA_VOLTAGE].value, fg_data[FG_DATA_CPRED_VOLTAGE].value,
+		settings[FG_MEM_VBAT_EST_DIFF].value, vbat_in_range);
+
+	pr_info("fg_data_current:%d fg_data_batt esr :%d fg_data_ocv:%d fg_data_soc:%d\n",
+		fg_data[FG_DATA_CURRENT].value, fg_data[FG_DATA_BATT_ESR].value,
+		fg_data[FG_DATA_OCV].value, fg_data[FG_DATA_BATT_SOC].value);
+
 	profiles_same = memcmp(chip->batt_profile, data,
 					PROFILE_COMPARE_LEN) == 0;
 	if (reg & PROFILE_INTEGRITY_BIT) {
@@ -6639,6 +6812,7 @@ done:
 	chip->first_profile_loaded = true;
 	chip->profile_loaded = true;
 	profile_loaded_zte = true;
+	pr_info("proflie_loaded is ok\n");
 	chip->soc_reporting_ready = true;
 	chip->battery_missing = is_battery_missing(chip);
 	update_chg_iterm(chip);
@@ -6653,7 +6827,8 @@ done:
 	if (chip->power_supply_registered)
 		power_supply_changed(&chip->bms_psy);
 	fg_relax(&chip->profile_wakeup_source);
-	pr_info("Battery SOC: %d, V: %duV\n", get_prop_capacity(chip),
+	pr_info("Rated cap: %d, Battery SOC: %d, V: %duV\n",
+		chip->rated_cap_mah, get_prop_capacity(chip),
 		fg_data[FG_DATA_VOLTAGE].value);
 	complete_all(&chip->fg_reset_done);
 	return rc;
@@ -6682,6 +6857,11 @@ reschedule:
 		msecs_to_jiffies(BATTERY_PSY_WAIT_MS));
 	fg_relax(&chip->profile_wakeup_source);
 	return 0;
+}
+
+int get_design_capacity(void)
+{
+	return zte_fg_chip->rated_cap_mah;
 }
 
 static void check_empty_work(struct work_struct *work)
@@ -6733,6 +6913,7 @@ static void batt_profile_init(struct work_struct *work)
 				struct fg_chip,
 				batt_profile_init.work);
 
+	pr_info("Enter batt_profile_init.\n");
 	if (fg_batt_profile_init(chip))
 		pr_err("failed to initialize profile\n");
 }
@@ -7555,6 +7736,9 @@ static void fg_cancel_all_works(struct fg_chip *chip)
 	cancel_work_sync(&chip->slope_limiter_work);
 	cancel_work_sync(&chip->dischg_gain_work);
 	cancel_work_sync(&chip->cc_soc_store_work);
+#ifdef CONFIG_BOARD_FUJISAN
+	cancel_work_sync(&chip->vbatt_set_fcc_work);
+#endif
 }
 
 static void fg_cleanup(struct fg_chip *chip)
@@ -7581,6 +7765,9 @@ static void fg_cleanup(struct fg_chip *chip)
 	wakeup_source_trash(&chip->fg_reset_wakeup_source.source);
 	wakeup_source_trash(&chip->cc_soc_wakeup_source.source);
 	wakeup_source_trash(&chip->sanity_wakeup_source.source);
+#ifdef CONFIG_BOARD_FUJISAN
+	wakeup_source_trash(&chip->vbatt_set_fcc_work_wakeup_source.source);
+#endif
 }
 
 static int fg_remove(struct spmi_device *spmi)
@@ -8756,6 +8943,7 @@ static int fg_probe(struct spmi_device *spmi)
 	u8 subtype, reg;
 	int rc = 0;
 
+	pr_info("Enter fg_probe\n");
 	if (!spmi) {
 		pr_err("no valid spmi pointer\n");
 		return -ENODEV;
@@ -8803,6 +8991,10 @@ static int fg_probe(struct spmi_device *spmi)
 			"qpnp_fg_cc_soc");
 	wakeup_source_init(&chip->sanity_wakeup_source.source,
 			"qpnp_fg_sanity_check");
+#ifdef CONFIG_BOARD_FUJISAN
+	wakeup_source_init(&chip->vbatt_set_fcc_work_wakeup_source.source,
+			"vbatt_set_fcc_work");
+#endif
 	spin_lock_init(&chip->sec_access_lock);
 	mutex_init(&chip->rw_lock);
 	mutex_init(&chip->cyc_ctr.lock);
@@ -8810,6 +9002,9 @@ static int fg_probe(struct spmi_device *spmi)
 	mutex_init(&chip->rslow_comp.lock);
 	mutex_init(&chip->sysfs_restart_lock);
 	mutex_init(&chip->ima_recovery_lock);
+#ifdef CONFIG_BOARD_FUJISAN
+	mutex_init(&chip->set_safe_chg_current_lock);
+#endif
 	INIT_DELAYED_WORK(&chip->update_jeita_setting, update_jeita_setting);
 	INIT_DELAYED_WORK(&chip->update_sram_data, update_sram_data_work);
 	INIT_DELAYED_WORK(&chip->update_temp_work, update_temp_data);
@@ -8823,6 +9018,9 @@ static int fg_probe(struct spmi_device *spmi)
 	INIT_WORK(&chip->status_change_work, status_change_work);
 	INIT_WORK(&chip->cycle_count_work, update_cycle_count);
 	INIT_WORK(&chip->battery_age_work, battery_age_work);
+#ifdef CONFIG_BOARD_FUJISAN
+	INIT_WORK(&chip->vbatt_set_fcc_work, vbatt_set_fcc_work);
+#endif
 	INIT_WORK(&chip->update_esr_work, update_esr_value);
 	INIT_WORK(&chip->set_resume_soc_work, set_resume_soc_work);
 	INIT_WORK(&chip->sysfs_restart_work, sysfs_restart_work);
@@ -8989,7 +9187,9 @@ static int fg_probe(struct spmi_device *spmi)
 		chip->revision[DIG_MAJOR], chip->revision[DIG_MINOR],
 		chip->revision[ANA_MAJOR], chip->revision[ANA_MINOR],
 		chip->pmic_subtype);
-
+#ifdef CONFIG_BOARD_FUJISAN
+	zte_fg_chip = chip;
+#endif
 	return rc;
 
 power_supply_unregister:
@@ -9003,6 +9203,9 @@ of_init_fail:
 	mutex_destroy(&chip->learning_data.learning_lock);
 	mutex_destroy(&chip->sysfs_restart_lock);
 	mutex_destroy(&chip->ima_recovery_lock);
+#ifdef CONFIG_BOARD_FUJISAN
+	mutex_destroy(&chip->set_safe_chg_current_lock);
+#endif
 	wakeup_source_trash(&chip->resume_soc_wakeup_source.source);
 	wakeup_source_trash(&chip->empty_check_wakeup_source.source);
 	wakeup_source_trash(&chip->memif_wakeup_source.source);
@@ -9017,6 +9220,9 @@ of_init_fail:
 	wakeup_source_trash(&chip->fg_reset_wakeup_source.source);
 	wakeup_source_trash(&chip->cc_soc_wakeup_source.source);
 	wakeup_source_trash(&chip->sanity_wakeup_source.source);
+#ifdef CONFIG_BOARD_FUJISAN
+	wakeup_source_trash(&chip->vbatt_set_fcc_work_wakeup_source.source);
+#endif
 	return rc;
 }
 

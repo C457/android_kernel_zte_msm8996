@@ -55,9 +55,6 @@
 #include "mdss_smmu.h"
 #include "mdss_mdp.h"
 u32 zte_frame_count;/*pan*/
-#ifdef CONFIG_BOARD_FUJISAN
-u32 zte_bl_brightness_2;
-#endif
 #include "mdp3_ctrl.h"
 
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
@@ -281,18 +278,6 @@ static int lcd_backlight_registered;
 
 #define MAX_BRIGHTNESS_EXIT_VRMODE 200
 
-#ifdef CONFIG_BOARD_FUJISAN
-static int lcd_backlight_2_registered;
-static void mdss_fb_set_bl_brightness_2(struct led_classdev *led_cdev,
-				      enum led_brightness value)
-{
-	if (value == 1) {
-		zte_bl_brightness_2 = 1;
-	} else {
-		zte_bl_brightness_2 = 0;
-	}
-}
-#endif
 static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 				      enum led_brightness value)
 {
@@ -323,6 +308,10 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	}
 }
 
+#ifdef CONFIG_BOARD_FUJISAN
+static int lcd_backlight_2_registered;
+#endif
+
 static struct led_classdev backlight_led = {
 	.name           = "lcd-backlight",
 	.brightness     = MDSS_MAX_BL_BRIGHTNESS / 2,
@@ -334,8 +323,7 @@ static struct led_classdev backlight_led = {
 static struct led_classdev backlight_led_2 = {
 	.name           = "lcd-backlight-2",
 	.brightness     = MDSS_MAX_BL_BRIGHTNESS / 2,
-	/*.brightness_set = mdss_fb_set_bl_brightness,*/
-	.brightness_set = mdss_fb_set_bl_brightness_2,
+	.brightness_set = mdss_fb_set_bl_brightness,
 	.max_brightness = MDSS_MAX_BL_BRIGHTNESS,
 };
 #endif
@@ -1342,9 +1330,6 @@ static int mdss_fb_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 	zte_frame_count = 0;/*pan*/
-#ifdef CONFIG_BOARD_FUJISAN
-	zte_bl_brightness_2 = 0;
-#endif
 	mfd = (struct msm_fb_data_type *)fbi->par;
 	mfd->key = MFD_KEY;
 	mfd->fbi = fbi;
@@ -3818,6 +3803,9 @@ skip_commit:
 	if (IS_ERR_VALUE(ret) || !sync_pt_data->flushed) {
 		mdss_fb_release_kickoff(mfd);
 		mdss_fb_signal_timeline(sync_pt_data);
+		if ((mfd->panel.type == MIPI_CMD_PANEL) &&
+			(mfd->mdp.signal_retire_fence))
+			mfd->mdp.signal_retire_fence(mfd, 1);
 	}
 
 	if (dynamic_dsi_switch) {
@@ -4648,6 +4636,7 @@ static int mdss_fb_atomic_commit_ioctl(struct fb_info *info,
 	struct mdp_frc_info *frc_info = NULL;
 	struct mdp_frc_info __user *frc_info_user;
 	struct msm_fb_data_type *mfd;
+	struct mdss_overlay_private *mdp5_data = NULL;
 
 	ret = copy_from_user(&commit, argp, sizeof(struct mdp_layer_commit));
 	if (ret) {
@@ -4659,9 +4648,20 @@ static int mdss_fb_atomic_commit_ioctl(struct fb_info *info,
 	if (!mfd)
 		return -EINVAL;
 
+	mdp5_data = mfd_to_mdp5_data(mfd);
+
 	if (mfd->panel_info->panel_dead) {
 		pr_debug("early commit return\n");
 		MDSS_XLOG(mfd->panel_info->panel_dead);
+		/*
+		 * In case of an ESD attack, since we early return from the
+		 * commits, we need to signal the outstanding fences.
+		 */
+		mdss_fb_release_fences(mfd);
+		if ((mfd->panel.type == MIPI_CMD_PANEL) &&
+			mfd->mdp.signal_retire_fence && mdp5_data)
+			mfd->mdp.signal_retire_fence(mfd,
+						mdp5_data->retire_cnt);
 		return 0;
 	}
 

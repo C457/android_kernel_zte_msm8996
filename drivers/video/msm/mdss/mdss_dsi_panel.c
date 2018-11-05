@@ -37,7 +37,6 @@ static char  module_name[50]={"0"};
 u32 panel_match_check = 0;
 extern u32 zte_frame_count;/*pan*/
 #ifdef CONFIG_BOARD_FUJISAN
-extern u32 zte_bl_brightness_2;
 #include <linux/uaccess.h>
 #endif
 #define DT_CMD_HDR 6
@@ -56,6 +55,66 @@ static int is_right_panel_off = 1;
 static int old_left_level = -50;
 void mdss_dsi_panel_5v_power(struct mdss_panel_data *pdata, int enable);
 int mdss_dsi_panel_reset_for_ts(struct mdss_panel_data *pdata, int enable);
+/********************* backlight reduce start *********************/
+unsigned int g_lcd_backlight_reduce = 0;
+static struct kobject *sys_lcd_backlight_reduce_kobj;
+static ssize_t lcd_backlight_reduce_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned int  retval = 0;
+
+	retval = snprintf(buf, 32, "%u\n", g_lcd_backlight_reduce);
+
+	return retval;
+}
+
+static ssize_t lcd_backlight_reduce_store(struct device *dev,
+				struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+
+	if (sscanf(buf, "%d", &input) != 1)
+		return -EINVAL;
+
+	pr_info("%s: lcd_backlight_reduce: %u.\n", __func__, input);
+	g_lcd_backlight_reduce = input;
+
+	return count;
+}
+
+static DEVICE_ATTR(lcd_backlight, 0664,  lcd_backlight_reduce_show,  lcd_backlight_reduce_store);
+
+static struct attribute *sys_lcd_backlight_reduce_attributes[] = {
+	&dev_attr_lcd_backlight.attr,
+	NULL
+};
+
+static struct attribute_group sys_lcd_backlight_reduce_attributes_group = {
+	.attrs = sys_lcd_backlight_reduce_attributes
+};
+
+static int create_sys_lcd_backlight_reduce(void)
+{
+	int err;
+
+	sys_lcd_backlight_reduce_kobj = kobject_create_and_add("lcd_backlight_reduce", NULL);
+	if (!sys_lcd_backlight_reduce_kobj) {
+		err = -EINVAL;
+		pr_info("%s: - ERROR Unable to create sys_lcd_backlight_reduce_kobj.\n", __func__);
+		return -EIO;
+	}
+
+	err = sysfs_create_group(sys_lcd_backlight_reduce_kobj, &sys_lcd_backlight_reduce_attributes_group);
+	if (err != 0) {
+		pr_info("%s - ERROR sys_lcd_backlight_reduce_attributes_group failed.\n", __func__);
+		kobject_put(sys_lcd_backlight_reduce_kobj);
+		return -EIO;
+	}
+
+	pr_info("%s succeeded.\n", __func__);
+
+	return err;
+}
+/********************* backlight reduce end *********************/
 
 #define HUE_JDI_CALIB_CMDS_COUNT 12
 #define HUE_JDI_CALIB_PARS_COUNT 192
@@ -1245,6 +1304,154 @@ static const struct file_operations panel_rgb_set_fops = {
 	.write		= panel_rgb_set_proc_write,
 };
 
+/*
+			39 01 00 00 00 00 05 2a 00 00 04 37
+			39 01 00 00 00 00 05 2b 00 78 07 7F
+			39 01 00 00 00 00 05 30 00 78 07 7F
+			15 01 00 00 00 00 02 12 00
+*/
+static char partial_display_mode = 0;
+static char lcd_partial_display_2A_cmd[5] = {0x2b, 0x00, 0x00, 0x04, 0x37};
+static char lcd_partial_display_2B_cmd[5] = {0x2b, 0x00, 0x00, 0x07, 0x7F};
+static char lcd_partial_display_30_cmd[5] = {0x30, 0x00, 0x00, 0x07, 0x7F};
+static char lcd_partial_display_12_cmd[2] = {0x12, 0x00};
+
+static int panel_partial_display_set_proc_show(struct seq_file *m, void *v)
+{
+	pr_info("%s:  2B[2]:0x%x, 2B[4]:0x%x, 30[2]:0x%x, 30[4]:0x%x\n",
+		__func__, lcd_partial_display_2B_cmd[2], lcd_partial_display_2B_cmd[4],
+		lcd_partial_display_30_cmd[2], lcd_partial_display_30_cmd[4]);
+	seq_printf(m, "2B[2]:0x%x, 2B[4]:0x%x, 30[2]:0x%x, 30[4]:0x%x\n",
+		lcd_partial_display_2B_cmd[2], lcd_partial_display_2B_cmd[4],
+		lcd_partial_display_30_cmd[2], lcd_partial_display_30_cmd[4]);
+
+	return 0;
+}
+
+static int panel_partial_display_set_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_partial_display_set_proc_show, NULL);
+}
+
+static struct dsi_cmd_desc panel_partitial_display_cmd[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 1, sizeof(lcd_partial_display_2A_cmd)}, lcd_partial_display_2A_cmd	},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 1, sizeof(lcd_partial_display_2B_cmd)}, lcd_partial_display_2B_cmd	},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 1, sizeof(lcd_partial_display_2B_cmd)}, lcd_partial_display_30_cmd	},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(lcd_partial_display_2B_cmd)}, lcd_partial_display_12_cmd	}
+};
+
+static int mdss_dsi_panel_partial_display_cmds_send(int ndx, int mode)
+{
+	struct dcs_cmd_req cmdreq;
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	pr_info("%s: enter ndx=%d mode=%d\n", __func__, ndx, mode);
+
+	if (mode < 0 || mode > 10) {
+		pr_err("%s: mode error. mode=%d\n", __func__, mode);
+		return -EINVAL;
+	}
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+
+	if (ctrl == NULL) {
+		pr_err("%s: ctrl == NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_err("%s: ctrl is power off, could't send partial display cmds\n", __func__);
+		return -EINVAL;
+	}
+
+	memset(&cmdreq, 0, sizeof(cmdreq));
+
+	lcd_partial_display_2B_cmd[2] = 0x00;
+	lcd_partial_display_30_cmd[2] = 0x00;
+	lcd_partial_display_2B_cmd[3] = 0x07;
+	lcd_partial_display_30_cmd[3] = 0x07;
+	lcd_partial_display_2B_cmd[4] = 0x7F;
+	lcd_partial_display_30_cmd[4] = 0x7F;
+
+	if (mode == 1) {
+		if (ndx == DSI_CTRL_LEFT) {
+			lcd_partial_display_2B_cmd[2] = 0x4;
+			lcd_partial_display_30_cmd[2] = 0x4;
+		} else if (ndx == DSI_CTRL_RIGHT) {
+			lcd_partial_display_2B_cmd[4] = 0x7B;
+			lcd_partial_display_30_cmd[4] = 0x7B;
+		}
+	} else if (mode == 2) {
+		if (ndx == DSI_CTRL_LEFT) {
+			lcd_partial_display_2B_cmd[4] = 0x7B;
+			lcd_partial_display_30_cmd[4] = 0x7B;
+		} else if (ndx == DSI_CTRL_RIGHT) {
+			lcd_partial_display_2B_cmd[2] = 0x4;
+			lcd_partial_display_30_cmd[2] = 0x4;
+		}
+	} else if (mode == 0) {
+		lcd_partial_display_2B_cmd[2] = 0x00;
+		lcd_partial_display_30_cmd[2] = 0x00;
+		lcd_partial_display_2B_cmd[3] = 0x07;
+		lcd_partial_display_30_cmd[3] = 0x07;
+		lcd_partial_display_2B_cmd[4] = 0x7F;
+		lcd_partial_display_30_cmd[4] = 0x7F;
+	}
+
+	pr_info("%s: send panel_partitial_display_cmd 2B[2]:0x%x, 2B[3]:0x%x, 2B[4]:0x%x\n",
+		__func__, lcd_partial_display_2B_cmd[2], lcd_partial_display_2B_cmd[3], lcd_partial_display_2B_cmd[4]);
+	pr_info("%s: send panel_partitial_display_cmd 30[2]:0x%x, 30[3]:0x%x, 30[4]:0x%x\n",
+		__func__, lcd_partial_display_30_cmd[2], lcd_partial_display_30_cmd[3], lcd_partial_display_30_cmd[4]);
+	cmdreq.cmds = panel_partitial_display_cmd;
+	cmdreq.cmds_cnt = ARRAY_SIZE(panel_partitial_display_cmd);
+
+	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_LP_MODE;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+	pr_info("%s: end\n", __func__);
+
+	return 0;
+}
+
+static ssize_t panel_partial_display_set_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	int mode;
+	int rc;
+
+	if (count < 1) {
+		pr_err("%s: count < 1 return!\n", __func__);
+		return -EINVAL;
+	}
+
+	rc = kstrtoint_from_user(buffer, count, 0, &mode);
+	if (rc) {
+		pr_err("%s: kstrtoint_from_user failed, rc=%d\n", __func__, rc);
+		return rc;
+	}
+
+	pr_info("%s: mode:%d\n", __func__, mode);
+
+	mdss_dsi_panel_partial_display_cmds_send(DSI_CTRL_LEFT, mode);
+	mdss_dsi_panel_partial_display_cmds_send(DSI_CTRL_RIGHT, mode);
+
+	partial_display_mode = mode;
+
+	return count;
+}
+
+
+static const struct file_operations panel_partial_display_set_fops = {
+	.open		= panel_partial_display_set_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_partial_display_set_proc_write,
+};
+
 static int panel_hue_calib_0_proc_show(struct seq_file *m, void *v)
 {
 	return mdss_dsi_panel_hue_calib_proc_show(m, v, DSI_CTRL_LEFT, 0);
@@ -1741,6 +1948,15 @@ static int panel_hue_proc_init(void)
 	}
 	pr_info("created /proc/panel_rgb_set\n");
 
+	res = proc_create("panel_partial_display_set", S_IWUGO | S_IRUGO, NULL,  &panel_partial_display_set_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_partial_display_set\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_partial_display_set\n");
+
+	create_sys_lcd_backlight_reduce();
+	pr_info("created /sys/lcd_backlight_reduce/lcd_backlight\n");
 end:
 	return ret;
 }
@@ -2508,6 +2724,28 @@ static int mdss_dsi_panel_bklt_calib(struct mdss_panel_info *pinfo, int level)
 
 	return i_level;
 }
+
+#if 0
+static int brightness_level_cali(int level)
+{
+	int level_new = 0;
+
+	if (level == 255) {
+		level_new = level;
+	} else if (level <= 180) {
+		level_new = level * 100 / 180;  /*basic num is 153*/
+	} else {
+		/* 155 = 255 - 100, (100): just for sample cal */
+		level_new = 155 * (100) / (255 - 180) * (level - 180) / (100) + 100;
+	}
+
+	if (level_new < 3 && level_new > 0) {
+		level_new = 3;
+	}
+
+	return level_new;
+}
+#endif
 #endif
 static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 {
@@ -2519,7 +2757,7 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 #ifdef CONFIG_BOARD_FUJISAN
 	struct mdss_dsi_ctrl_pdata *sctrl = NULL;
 	static int disabled_cabc = 0;
-	int is_delayed = 0;
+	int level_new;
 #endif
 
 
@@ -2556,6 +2794,27 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 	}
 	pr_info("LCD %s: ctrl->ndx=%d pinfo->is_bl_calib=%d flag=%d level=%d -> new_level=%d\n",
 		__func__, ctrl->ndx, pinfo->is_bl_calib, power_on_flag, level, bl_level);
+	#if 0
+	level_new = brightness_level_cali(bl_level);/* brightness remapping */
+	pr_info("LCD %s: Set Backlight directly level is %d,mapping level is %d\n",
+			__func__, bl_level, level_new);
+	#else
+	level_new = bl_level;
+	#endif
+	if (g_lcd_backlight_reduce && level_new) {
+		level_new = ((level_new-3)*g_lcd_backlight_reduce)/100 + 3;/* brightness reduce */
+
+		pr_info("LCD %s: Backlight brightness reduce %d level_new is %d\n",
+				__func__, g_lcd_backlight_reduce, level_new);
+
+		bl_level = level_new;
+
+		if (bl_level > 255)
+			bl_level = 255;
+
+		if (bl_level != 0 && bl_level < 3)
+			bl_level = 3;
+	}
 #else
 
 #ifdef ZTE_BRIGHTNESS_CALIBRATION_NOT
@@ -2609,25 +2868,20 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 	cmdreq.cb = NULL;
 
 #ifdef CONFIG_BOARD_FUJISAN
-	sctrl = mdss_dsi_get_other_ctrl(ctrl);
-
 	if (ctrl->ndx == DSI_CTRL_LEFT) {
-		if (zte_bl_brightness_2 == 1) {
-			pr_info("LCD %s: zte_bl_brightness_2 == 1, set main backlight as 0\n", __func__);
-			led_pwm1[1] = (unsigned char)0;
-		}
-
-		if (old_left_level == 0	&& bl_level != 0 && !is_td4322_panel) {
-			pr_info("%s: jdi old_left_level:0 right panel on, delay\n", __func__);
-			mdelay(100);
-			is_delayed = 1;
-		} else if (old_left_level == 0 && bl_level != 0 && is_td4322_panel) {
-			is_delayed = 1;
-		} else {
-			is_delayed = 0;
-		}
-
 		mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+		sctrl = mdss_dsi_get_other_ctrl(ctrl);
+		if (sctrl) {
+			if (old_left_level == -50
+				&& sctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+				if (!disabled_cabc) {
+					qpnp_wled_enable_cabc(0);
+					is_right_panel_off = 1;
+					disabled_cabc = 1;
+				}
+			}
+		}
 
 		if (is_td4322_panel && bl_level != 0) {
 			if (bl_level < 30) {
@@ -2635,10 +2889,6 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 			} else {
 				mdss_dsi_panel_send_b9_reg(ctrl, 1);
 			}
-		}
-
-		if (zte_bl_brightness_2 == 1) {
-			led_pwm1[1] = (unsigned char)bl_level;
 		}
 
 		if ((old_left_level == 0 || old_left_level == -50) && bl_level != 0) {
@@ -2655,68 +2905,32 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 		} else {
 			old_left_level = bl_level;
 		}
-	} else {
-		mdss_dsi_cmdlist_put(ctrl, &cmdreq);
-	}
-
-	if (sctrl && (ctrl->ndx == DSI_CTRL_LEFT)) {
-		if (sctrl->panel_data.panel_info.panel_power_state != MDSS_PANEL_POWER_OFF) {
-			bl_level = level;
-			if (bl_level > 0 && bl_level <= 255) {
-				pinfo = &(sctrl->panel_data.panel_info);
-				if (pinfo->is_bl_calib) {
-					bl_level = mdss_dsi_panel_bklt_calib(pinfo, bl_level);
-					if (bl_level < 3)
-						bl_level = 3;
-				} else {
-#ifndef ZTE_FASTMMI_MANUFACTURING_VERSION
-					bl_level = g_bl_values_default[bl_level][0];
-#else
-					bl_level = level;
-#endif
-				}
-			}
-
-			if (bl_level != 0 && bl_level < 3) {
-				bl_level = 3;
-			}
-
-			pr_info("LCD %s: sctrl->ndx=%d pinfo->is_bl_calib=%d level=%d -> new_level=%d\n",
-					__func__, sctrl->ndx, pinfo->is_bl_calib, level, bl_level);
-
-			led_pwm1[1] = (unsigned char)bl_level;
-			if (is_right_panel_off == 1 && bl_level != 0 && !is_delayed) {
-				pr_info("%s: is_right_panel_off bl_level !=0 !is_delayed delay\n", __func__);
-				if (zte_bl_brightness_2 == 1)
-					mdelay(120);
-				else
-					mdelay(50);
-			}
-
+	} else if (ctrl->ndx == DSI_CTRL_RIGHT) {
+		if (ctrl->panel_data.panel_info.panel_power_state != MDSS_PANEL_POWER_OFF) {
 			if (bl_level != 0 && is_right_panel_off == 1) {
 				qpnp_wled_enable_cabc(1);
 				is_right_panel_off = 0;
 
 				if (jdi_hue_right_calib == 1)
-					mdss_dsi_panel_hue_calib_cmds_send(sctrl, false);
+					mdss_dsi_panel_hue_calib_cmds_send(ctrl, false);
 
-				if (sctrl->current_hue_level_index_for_setting >= 0
-					&& sctrl->current_hue_level_index_for_setting < MDSS_DSI_HUE_NUM) {
-					mdss_dsi_panel_hue(sctrl,
-						g_hue_default_for_setting[sctrl->current_hue_level_index_for_setting]);
+				if (ctrl->current_hue_level_index_for_setting >= 0
+					&& ctrl->current_hue_level_index_for_setting < MDSS_DSI_HUE_NUM) {
+					mdss_dsi_panel_hue(ctrl,
+						g_hue_default_for_setting[ctrl->current_hue_level_index_for_setting]);
 				}
 			} else if (bl_level == 0) {
 				qpnp_wled_enable_cabc(0);
 				is_right_panel_off = 1;
 			}
 
-			mdss_dsi_cmdlist_put(sctrl, &cmdreq);
+			mdss_dsi_cmdlist_put(ctrl, &cmdreq);
 
 			if (is_td4322_panel && bl_level != 0) {
 				if (bl_level < 30) {
-					mdss_dsi_panel_send_b9_reg(sctrl, 0);
+					mdss_dsi_panel_send_b9_reg(ctrl, 0);
 				} else {
-					mdss_dsi_panel_send_b9_reg(sctrl, 1);
+					mdss_dsi_panel_send_b9_reg(ctrl, 1);
 				}
 			}
 		} else {
@@ -2727,8 +2941,6 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 				disabled_cabc = 1;
 			}
 		}
-	} else {
-		pr_err("LCD %s: sctrl is NULL", __func__);
 	}
 #else
 	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
@@ -3900,6 +4112,14 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 
 	if (on_cmds->cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, on_cmds, CMD_REQ_COMMIT);
+
+#ifdef CONFIG_BOARD_FUJISAN
+	if (partial_display_mode != 0) {
+		pr_info("%s: ndx=%d partial_display_mode=%d\n", __func__, ctrl->ndx, partial_display_mode);
+		msleep(VSYNC_DELAY);	/* wait for a vsync passed */
+		mdss_dsi_panel_partial_display_cmds_send(ctrl->ndx, partial_display_mode);
+	}
+#endif
 
 	if (pinfo->compression_mode == COMPRESSION_DSC)
 		mdss_dsi_panel_dsc_pps_send(ctrl, pinfo);

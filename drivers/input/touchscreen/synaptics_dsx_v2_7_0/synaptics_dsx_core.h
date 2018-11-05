@@ -84,7 +84,7 @@
 #define SYNA_TDDI
 */
 
-#define CONFIG_CREATE_GLOVED_INTERFACE
+/*#define CONFIG_CREATE_GLOVED_INTERFACE*/
 #define CONFIG_TOUCHSCREEN_VDDIO_USE_GPIO
 #ifndef ZTE_FASTMMI_MANUFACTURING_VERSION
 #define DO_STARTUP_FW_UPDATE
@@ -437,6 +437,7 @@ struct synaptics_rmi4_data {
 	bool stylus_enable;
 	bool eraser_enable;
 	bool external_afe_buttons;
+	bool inter_flag;
 	int (*reset_device)(struct synaptics_rmi4_data *rmi4_data,
 			bool rebuild);
 	int (*irq_enable)(struct synaptics_rmi4_data *rmi4_data, bool enable,
@@ -486,6 +487,12 @@ void synaptics_rmi4_new_function(struct synaptics_rmi4_exp_fn *exp_fn_module,
 int synaptics_get_min_std_rawdata(short *min_rawdata);
 int synaptics_get_max_std_rawdata(short *max_rawdata);
 char zte_ts_is_td4322(void);
+void synaptics_rmi4_free_fingers_2nd(void);
+void joystick_touch_expand_report(int x, int y,
+								unsigned int wx, unsigned int wy,
+								unsigned char slot_id, unsigned char tool_finger,
+								bool up_flag, bool sync_flag);
+void synaptics_int_enable_ctrl_2nd(bool flag);
 
 int synaptics_fw_updater(const unsigned char *fw_data);
 

@@ -10,6 +10,7 @@
 #include <linux/ftrace.h>
 #include <linux/of_device.h>
 #include <sound/pcm.h>
+#include <linux/wakelock.h>
 
 /*
 	i2c transaction on Linux limited to 64k
@@ -82,6 +83,7 @@ struct tfa98xx {
 	struct delayed_work interrupt_work;
 	struct delayed_work tapdet_work;
 	struct mutex dsp_lock;
+	struct wake_lock i2c_wake_lock;
 	int dsp_init;
 	int dsp_fw_state;
 	int sysclk;

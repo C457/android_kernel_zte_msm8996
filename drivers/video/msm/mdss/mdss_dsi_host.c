@@ -1631,6 +1631,15 @@ static int mdss_dsi_cmds2buf_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	struct dsi_cmd_desc *cm;
 	struct dsi_ctrl_hdr *dchdr;
 	int len, wait, tot = 0;
+#ifdef CONFIG_BOARD_FUJISAN
+	int ret = 0;
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_info("%s: ndx=%d Power off, could not send cmd anymore\n",
+			__func__, ctrl->ndx);
+		return ret;
+	}
+#endif
 
 	tp = &ctrl->tx_buf;
 	mdss_dsi_buf_init(tp);
@@ -1719,6 +1728,15 @@ int mdss_dsi_cmds_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 {
 	int len = 0;
 	struct mdss_dsi_ctrl_pdata *mctrl = NULL;
+#ifdef CONFIG_BOARD_FUJISAN
+	int ret = 0;
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_info("%s: ndx=%d Power off, could not send cmd anymore\n",
+			__func__, ctrl->ndx);
+		return ret;
+	}
+#endif
 
 	/*
 	 * Turn on cmd mode in order to transmit the commands.
@@ -2603,6 +2621,16 @@ int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 	int rc = 0;
 	bool hs_req = false;
 	bool cmd_mutex_acquired = false;
+
+#ifdef CONFIG_BOARD_FUJISAN
+	struct mdss_panel_info *panel_info = NULL;
+
+	panel_info = &ctrl->panel_data.panel_info;
+	if (panel_info->panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_err("LCD %s ndx=%d Power off,could not send cmd anymore!", __func__, ctrl->ndx);
+		return rc;
+	}
+#endif
 
 	if (from_mdp) {	/* from mdp kickoff */
 		if (!ctrl->burst_mode_enabled) {

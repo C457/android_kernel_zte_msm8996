@@ -47,8 +47,7 @@ typedef struct {
 
 
 static TOUCH_EXPAND_T global_touch_expand;
-extern bool joystick_mode;
-static bool pre_mode = 0;
+
 
 static DECLARE_WAIT_QUEUE_HEAD(touch_expand_waitq);
 
@@ -57,12 +56,8 @@ void zte_touch_expand_push(int x, int y,
 								unsigned char slot_id, unsigned char tool_finger,
 								unsigned char panel_id)
 {
-	struct coordinate position[1];
 	COORD_INFO_T *fragment_info = NULL;
 	unsigned char list_id = 0;
-	COORD_INFO_T *fragment_info_mirror = NULL;
-	unsigned char list_id_mirror = 0;
-	int touch_flag = 0;
 
 	fragment_info = kzalloc(sizeof(COORD_INFO_T), GFP_KERNEL);
 	if (fragment_info == NULL) {
@@ -70,26 +65,11 @@ void zte_touch_expand_push(int x, int y,
 		return;
 	}
 
-	fragment_info_mirror = kzalloc(sizeof(COORD_INFO_T), GFP_KERNEL);
-	if (fragment_info_mirror == NULL) {
-		TEB_ERROR("falied to kmalloc fragment_info_mirror\n");
-		kfree(fragment_info);
-		return;
-	}
-
-	if (joystick_mode)
-		pre_mode = 1;
-
 	fragment_info->y = y;
 	fragment_info->wx = wx;
 	fragment_info->wy = wy;
 	fragment_info->panel_id = panel_id;
 	fragment_info->tool_finger = tool_finger;
-
-	fragment_info_mirror->wx = wx;
-	fragment_info_mirror->wy = wy;
-	fragment_info_mirror->panel_id = panel_id ? 0 : 1;
-	fragment_info_mirror->tool_finger = tool_finger;
 
 	if (panel_id == MINOR_PANEL) {
 		fragment_info->x = x + SINGLR_MAX_X;
@@ -99,26 +79,6 @@ void zte_touch_expand_push(int x, int y,
 		fragment_info->x = x;
 		fragment_info->slot_id = slot_id;
 		list_id = slot_id;
-
-		touch_flag = global_touch_expand.finger_flag & (1 << fragment_info->slot_id);
-		if (!touch_flag && tool_finger)
-			zte_down(slot_id, x, y);
-
-		position[0].x = x;
-		position[0].y = y;
-		zte_get_offset(slot_id, position);
-		if (!tool_finger)
-			zte_up(slot_id);
-
-		fragment_info_mirror->x = position[0].x;
-		fragment_info_mirror->y = position[0].y;
-
-		if (slot_id > (MAX_FINGER_MIRROR / 2 - 1))
-			fragment_info_mirror->slot_id = slot_id + (MAX_FINGER / 2);
-		else
-			fragment_info_mirror->slot_id = slot_id +
-					(MAX_FINGER / 2) + (MAX_FINGER_MIRROR / 2);
-		list_id_mirror = fragment_info_mirror->slot_id;
 	}
 
 	/*do_gettimeofday(&fragment_info->tv);*/
@@ -129,9 +89,6 @@ void zte_touch_expand_push(int x, int y,
 	/*TEB_INFO("lock + lock + lock + lock\n");*/
 	mutex_lock(&global_touch_expand.list_mutex);
 	list_add(&(fragment_info->list), &global_touch_expand.touch_list_head[list_id]);
-	if ((joystick_mode || pre_mode) && (panel_id == MAJOR_PANEL))
-		list_add(&(fragment_info_mirror->list),
-			&global_touch_expand.touch_list_head[list_id_mirror]);
 	global_touch_expand.wait_flag = true;
 	mutex_unlock(&global_touch_expand.list_mutex);
 	/*TEB_INFO("unlock - unlock - unlock - unlock\n");*/
@@ -232,8 +189,6 @@ static void zte_touch_expand_handle_fragment(COORD_INFO_T *report_info[])
 		debug_max_finger = 0;
 		debug_x = 0;
 		debug_y = 0;
-		if (!joystick_mode)
-			pre_mode = 0;
 	}
 
 	input_sync(input_dev);

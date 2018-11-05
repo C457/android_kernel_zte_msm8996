@@ -230,6 +230,7 @@ static void *__dma_alloc_noncoherent(struct device *dev, size_t size,
 		if (addr)
 			*dma_handle = phys_to_dma(dev, page_to_phys(*page));
 
+		kvfree(page);
 		return addr;
 
 	}

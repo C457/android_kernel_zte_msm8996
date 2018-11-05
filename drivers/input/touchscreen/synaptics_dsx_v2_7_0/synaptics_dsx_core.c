@@ -38,6 +38,7 @@
 #include <linux/input.h>
 #include <linux/gpio.h>
 #include <linux/proc_fs.h>
+#include <asm/uaccess.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/input/synaptics_dsx_v2_7_0.h>
@@ -1267,6 +1268,7 @@ exit:
 	return touch_count;
 }
 
+
 static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		struct synaptics_rmi4_fn *fhandler)
 {
@@ -1304,6 +1306,9 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #ifdef F12_DATA_15_WORKAROUND
 	static unsigned char objects_already_present;
 #endif
+	static unsigned char finger_nums;
+	static unsigned short log_x;
+	static unsigned short log_y;
 
 	fingers_to_process = fhandler->num_of_data_points;
 	data_addr = fhandler->full_addr.data_base;
@@ -1372,8 +1377,15 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			synaptics_rmi4_free_fingers(rmi4_data);
 		finger_presence = 0;
 		stylus_presence = 0;
+		finger_nums = 0;
 		return 0;
 	}
+
+	if ((!finger_presence) && !integrate_device_mode) {
+		SYNA_INFO("%s: touch down\n", __func__);
+	}
+
+	finger_nums = (fingers_to_process > finger_nums) ? fingers_to_process : finger_nums;
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
 			data_addr + extra_data->data1_offset,
@@ -1426,6 +1438,11 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		if (rmi4_data->hw_if->board_data->y_flip)
 			y = rmi4_data->sensor_max_y - y;
 
+		if (!finger_presence) {
+			log_x = x;
+			log_y = y;
+		}
+
 		switch (finger_status) {
 		case F12_FINGER_STATUS:
 		case F12_GLOVED_FINGER_STATUS:
@@ -1435,6 +1452,9 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			if (integrate_device_mode)
 				zte_touch_expand_push(x, y, wx, wy, finger, 1, 0);
 			else {
+				if (joystick_mode) {
+					joystick_touch_expand_report(x, y, wx, wy, finger, 1, 0, 0);
+				}
 #ifdef TYPE_B_PROTOCOL
 				input_mt_slot(rmi4_data->input_dev, finger);
 				input_mt_report_slot_state(rmi4_data->input_dev,
@@ -1554,6 +1574,9 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			if (integrate_device_mode)
 				zte_touch_expand_push(0, 0, 0, 0, finger, 0, 0);
 			else {
+				if (joystick_mode) {
+					joystick_touch_expand_report(0, 0, 0, 0, finger, 0, 0, 0);
+				}
 #ifdef TYPE_B_PROTOCOL
 				input_mt_slot(rmi4_data->input_dev, finger);
 				input_mt_report_slot_state(rmi4_data->input_dev,
@@ -1570,6 +1593,10 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		objects_already_present = 0;
 #endif
 		if (!integrate_device_mode) {
+			if (joystick_mode) {
+				joystick_touch_expand_report(0, 0, 0, 0, 0, 0, 1, 0);
+			}
+
 			input_report_key(rmi4_data->input_dev,
 					BTN_TOUCH, 0);
 			input_report_key(rmi4_data->input_dev,
@@ -1577,6 +1604,10 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #ifndef TYPE_B_PROTOCOL
 			input_mt_sync(rmi4_data->input_dev);
 #endif
+			SYNA_INFO("%s: touch up, finger_nums %d[%u:%u]\n", __func__, finger_nums, log_x, log_y);
+			log_x = 0;
+			log_y = 0;
+			finger_nums = 0;
 
 			if (rmi4_data->stylus_enable) {
 				stylus_presence = 0;
@@ -1593,8 +1624,12 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		}
 	}
 
-	if (!integrate_device_mode)
+	if (!integrate_device_mode) {
+		if (joystick_mode) {
+			joystick_touch_expand_report(0, 0, 0, 0, 0, 0, 0, 1);
+		}
 		input_sync(rmi4_data->input_dev);
+	}
 
 	mutex_unlock(&(rmi4_data->rmi4_report_mutex));
 
@@ -4751,24 +4786,42 @@ static ssize_t synaptics_main_tp_ctrl(struct file *file, const char  __user *buf
 {
 	struct synaptics_rmi4_data *rmi4_data = exp_data.rmi4_data;
 	unsigned int input = 0;
+	unsigned char cmd = 0;
 
 	SYNA_INFO("into\n");
-
-	if (sscanf(buffer, "%u", &input) != 1)
-		return -EINVAL;
 
 	if (rmi4_data->suspend) {
 		SYNA_INFO("%s: ts in suspend, exit\n", __func__);
 		return count;
 	}
 
+	if (count == 0) {
+		SYNA_INFO("%s: count abnormal, exit\n", __func__);
+		return count;
+	}
+
+	if (copy_from_user(&cmd, buffer, 1))
+		return -EINVAL;
+
+	if (cmd == '0')
+		input = 0;
+	else
+		input = 1;
+
 	SYNA_INFO("input %d.\n", input);
 
-	if (input)
+	if (rmi4_data->inter_flag == ((input == 1) ? true : false)) {
+		SYNA_INFO("%s: ts irq already is %d, exit\n", __func__, rmi4_data->inter_flag);
+		return count;
+	}
+
+	if (input) {
 		synaptics_rmi4_int_enable(rmi4_data, true);
-	else {
+		rmi4_data->inter_flag = true;
+	} else {
 		synaptics_rmi4_int_enable(rmi4_data, false);
 		usleep_range(16000, 20000);/*wait irq handle finished*/
+		rmi4_data->inter_flag = false;
 	}
 
 	if (rmi4_data->fingers_on_2d == true)
@@ -4939,6 +4992,7 @@ static ssize_t integrate_device_mode_proc_write(struct file *file, const char __
 					size_t count, loff_t *pos)
 {
 	unsigned int input = 0;
+	struct synaptics_rmi4_data *rmi4_data = exp_data.rmi4_data;
 
 	SYNA_INFO("integrate_device_mode write\n");
 
@@ -4950,7 +5004,36 @@ static ssize_t integrate_device_mode_proc_write(struct file *file, const char __
 
 	SYNA_INFO("input = %u\n", input);
 
+	if (integrate_device_mode == input) {
+		SYNA_INFO("integrate device mode already is  %u\n", input);
+		return count;
+	}
+
+	/* disable irq of major tp*/
+	SYNA_INFO("disable irq\n");
+	if (!rmi4_data->suspend) {
+		synaptics_rmi4_int_enable(rmi4_data, false);
+		rmi4_data->inter_flag = false;
+		usleep_range(16000, 20000);/*wait irq handle finished*/
+	}
+	/* disable irq of minor tp*/
+	synaptics_int_enable_ctrl_2nd(false);
+
+	SYNA_INFO("free all fingers\n");
+	/* free fingers in major tp*/
+	synaptics_rmi4_free_fingers(rmi4_data);
+	/* free fingers in minor tp*/
+	synaptics_rmi4_free_fingers_2nd();
+
 	integrate_device_mode = input;
+	/* enable irq of major tp*/
+	SYNA_INFO("enable irq\n");
+	if (!rmi4_data->suspend) {
+		synaptics_rmi4_int_enable(rmi4_data, true);
+		rmi4_data->inter_flag = true;
+	}
+	/* enable irq of minor tp*/
+	synaptics_int_enable_ctrl_2nd(true);
 
 	return count;
 }
@@ -4981,6 +5064,7 @@ static ssize_t joystick_mode_proc_write(struct file *file, const char __user *bu
 					size_t count, loff_t *pos)
 {
 	unsigned int input = 0;
+	struct synaptics_rmi4_data *rmi4_data = exp_data.rmi4_data;
 
 	SYNA_INFO("joystick_mode write\n");
 
@@ -4992,7 +5076,38 @@ static ssize_t joystick_mode_proc_write(struct file *file, const char __user *bu
 
 	SYNA_INFO("input = %u\n", input);
 
+	if (joystick_mode == input) {
+		SYNA_INFO("joystick mode already is %u\n", input);
+		return count;
+	}
+
+	/* disable irq of major tp*/
+	SYNA_INFO("disable irq\n");
+	if (!rmi4_data->suspend) {
+		synaptics_rmi4_int_enable(rmi4_data, false);
+		rmi4_data->inter_flag = false;
+		usleep_range(16000, 20000);/*wait irq handle finished*/
+	}
+	/* disable irq of minor tp*/
+	synaptics_int_enable_ctrl_2nd(false);
+
+	SYNA_INFO("free all fingers\n");
+	/* free fingers in major tp*/
+	synaptics_rmi4_free_fingers(rmi4_data);
+	/* free fingers in minor tp*/
+	synaptics_rmi4_free_fingers_2nd();
+
 	joystick_mode = input;
+
+	/* enable irq of major tp*/
+	SYNA_INFO("enable irq\n");
+	if (!rmi4_data->suspend) {
+		synaptics_rmi4_int_enable(rmi4_data, true);
+		rmi4_data->inter_flag = true;
+	}
+
+	/* enable irq of minor tp*/
+	synaptics_int_enable_ctrl_2nd(true);
 
 	return count;
 }
@@ -5192,6 +5307,7 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 	rmi4_data->suspend = false;
 	rmi4_data->irq_enabled = false;
 	rmi4_data->fingers_on_2d = false;
+	rmi4_data->inter_flag = true;
 
 	rmi4_data->reset_device = synaptics_rmi4_reset_device;
 	rmi4_data->irq_enable = synaptics_rmi4_irq_enable;
@@ -5893,7 +6009,7 @@ exit:
 		write_gloved_value(current_gloved_finger_state);
 
 #endif
-
+	rmi4_data->inter_flag = true;
 	rmi4_data->suspend = false;
 
 	SYNA_INFO("%s: end----\n", __func__);

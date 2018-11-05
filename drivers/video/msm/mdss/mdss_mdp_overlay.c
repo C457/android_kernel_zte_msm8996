@@ -5879,6 +5879,10 @@ static int mdss_mdp_overlay_on(struct msm_fb_data_type *mfd)
 	struct mdss_overlay_private *mdp5_data;
 	struct mdss_mdp_ctl *ctl = NULL;
 	struct mdss_data_type *mdata;
+#ifdef CONFIG_BOARD_FUJISAN
+	static int first_overlay_on_index1 = 1;
+	int old_handoff_pending = -1;
+#endif
 
 	if (!mfd)
 		return -ENODEV;
@@ -5931,6 +5935,17 @@ static int mdss_mdp_overlay_on(struct msm_fb_data_type *mfd)
 	overlay start and kickoff should cover all cases
 	TODO: In the long run, the overlay start and kickoff
 	should not be skipped, instead, the handoff can be done */
+#ifdef CONFIG_BOARD_FUJISAN
+	if (mfd->index == 1 && first_overlay_on_index1) {
+		if (mdata->handoff_pending) {
+			old_handoff_pending = mdata->handoff_pending;
+			mdata->handoff_pending = false;
+		}
+
+		first_overlay_on_index1 = 0;
+	}
+#endif
+
 	if (!mfd->panel_info->cont_splash_enabled &&
 		!mdata->handoff_pending) {
 		rc = mdss_mdp_overlay_start(mfd);
@@ -5954,6 +5969,12 @@ panel_on:
 	}
 
 end:
+#ifdef CONFIG_BOARD_FUJISAN
+	if (mfd->index == 1 && old_handoff_pending != -1) {
+		mdata->handoff_pending = old_handoff_pending;
+		old_handoff_pending = -1;
+	}
+#endif
 	return rc;
 }
 
@@ -6337,8 +6358,11 @@ static void __vsync_retire_signal(struct msm_fb_data_type *mfd, int val)
 	mutex_lock(&mfd->mdp_sync_pt_data.sync_mutex);
 	if (mdp5_data->retire_cnt > 0) {
 		sw_sync_timeline_inc(mdp5_data->vsync_timeline, val);
-
 		mdp5_data->retire_cnt -= min(val, mdp5_data->retire_cnt);
+		pr_debug("Retire signaled! timeline val=%d remaining=%d\n",
+				mdp5_data->vsync_timeline->value,
+				mdp5_data->retire_cnt);
+
 		if (mdp5_data->retire_cnt == 0) {
 			mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON);
 			mdp5_data->ctl->ops.remove_vsync_handler(mdp5_data->ctl,
@@ -6530,6 +6554,13 @@ int mdss_mdp_input_event_handler(struct msm_fb_data_type *mfd)
 	return rc;
 }
 
+static void mdss_mdp_signal_retire_fence(struct msm_fb_data_type *mfd,
+						int retire_cnt)
+{
+	__vsync_retire_signal(mfd, retire_cnt);
+	pr_debug("Signaled (%d) pending retire fence\n", retire_cnt);
+}
+
 int mdss_mdp_overlay_init(struct msm_fb_data_type *mfd)
 {
 	struct device *dev = mfd->fbi->dev;
@@ -6578,6 +6609,7 @@ int mdss_mdp_overlay_init(struct msm_fb_data_type *mfd)
 	mdp5_interface->splash_init_fnc = mdss_mdp_splash_init;
 	mdp5_interface->configure_panel = mdss_mdp_update_panel_info;
 	mdp5_interface->input_event_handler = mdss_mdp_input_event_handler;
+	mdp5_interface->signal_retire_fence = mdss_mdp_signal_retire_fence;
 
 	if (mfd->panel_info->type == WRITEBACK_PANEL) {
 		mdp5_interface->atomic_validate =

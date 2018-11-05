@@ -1,0 +1,20 @@
+PM: add log to show which QMI wakeup system
+
+when smd-modme wakeup the system,there are maybe only IPCRTR log,
+so it is hard analysis which wakeups indeed,such as RIL,GPS,fs.
+
+how to test.
+check if the following log is in kernel-log when smd-modem wakeups.
+do_read_data+0x][IPCRTR]  CLI RX Len:0x23f T:0x1 CF:0x0 SVC:<0
+
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# Author:    10053982 <lianghouxing@zte.com.cn>
+#
+# On branch o-8996-v2
+# Your branch is up-to-date with 'zte/o-8996-v2'.
+#
+# Changes to be committed:
+#	modified:   ipc_router/ipc_router_core.c
+#

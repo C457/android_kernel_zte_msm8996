@@ -172,7 +172,7 @@
 					 ESR_ELx_SYS64_ISS_DIR_READ)
 
 #define ESR_ELx_SYS64_ISS_SYS_CNTFRQ	(ESR_ELx_SYS64_ISS_SYS_VAL(3, 3, 0, 14, 0) | \
-										ESR_ELx_SYS64_ISS_DIR_READ)
+					 ESR_ELx_SYS64_ISS_DIR_READ)
 
 #ifndef __ASSEMBLY__
 #include <asm/types.h>
@@ -181,3 +181,4 @@ const char *esr_get_class_string(u32 esr);
 #endif /* __ASSEMBLY */
 
 #endif /* __ASM_ESR_H */
+

@@ -43,6 +43,11 @@
 #include "sdhci-msm-ice.h"
 #include "cmdq_hci.h"
 
+/** ZTE MODIFY  for proc file read  */
+#include <linux/seq_file.h>
+#include <linux/proc_fs.h>
+#include <linux/string_helpers.h>
+/* end */
 #define QOS_REMOVE_DELAY_MS	10
 #define CORE_POWER		0x0
 #define CORE_SW_RST		(1 << 7)
@@ -3320,6 +3325,164 @@ void sdhci_msm_pm_qos_irq_vote(struct sdhci_host *host)
 				msm_host->pm_qos_irq.latency);
 }
 
+/** ZTE MODIFY  for save emmc/sdcard info to proc/file*/
+struct mmc_host *emmc_host = NULL;
+struct mmc_host *sdcard_host = NULL;
+
+static emmc_data_type emmc_vendor_info[] = {
+	/*manu id	vendor*/
+	{ 0x00,	"Unknown" },
+	{ 0x11,	"Toshiba" },
+	{ 0x15,	"Samsung" },
+	{ 0x45,	"Sandisk" },
+	{ 0x90,	"Hynix" },
+};
+
+char *mmc_get_emmc_vendor(int manu_id)
+{
+	int id = 0;
+	int array_len =  sizeof(emmc_vendor_info)/sizeof(emmc_data_type);
+
+	for (id = 0; id < array_len; id++) {
+		if (emmc_vendor_info[id].manu_id == manu_id)
+			return emmc_vendor_info[id].vendor;
+	}
+
+	return emmc_vendor_info[0].vendor;
+}
+
+/**
+ * string_get_size - get the size in the specified units
+ * @size:	The size to be converted
+ * @units:	units to use (powers of 1000 or 1024)
+ * @buf:	buffer to format to
+ * @len:	length of buffer
+ *
+ * This function returns a string formatted to 3 significant figures
+ * giving the size in the required units.  Returns 0 on success or
+ * error on failure.  @buf is always zero terminated.
+ *
+ */
+static int zte_string_get_size(u64 size, const enum string_size_units units,
+		    char *buf, int len)
+{
+	static const char *const units_10[] = {
+		"B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB", NULL
+	};
+	static const char *const units_2[] = {
+		"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB",
+		NULL
+	};
+	static const char *const *const units_str[] = {
+		[STRING_UNITS_10] = units_10,
+		[STRING_UNITS_2] = units_2,
+	};
+	static const unsigned int divisor[] = {
+		[STRING_UNITS_10] = 1000,
+		[STRING_UNITS_2] = 1024,
+	};
+	int i, j;
+	u64 remainder = 0, sf_cap;
+	char tmp[8];
+
+	tmp[0] = '\0';
+	i = 0;
+	if (size >= divisor[units]) {
+		while (size >= divisor[units] && units_str[units][i]) {
+			remainder = do_div(size, divisor[units]);
+			i++;
+		}
+
+		sf_cap = size;
+		for (j = 0; sf_cap*10 < 1000; j++)
+			sf_cap *= 10;
+
+		if (j) {
+			remainder *= 1000;
+			do_div(remainder, divisor[units]);
+			snprintf(tmp, sizeof(tmp), ".%02lld",
+				 (unsigned long long)remainder);
+			tmp[j+1] = '\0';
+		}
+	}
+
+	snprintf(buf, len, "%lld%s%s", (unsigned long long)size,
+		 tmp, units_str[units][i]);
+
+	return 0;
+}
+
+static int mmc_proc_show(struct seq_file *m, void *v)
+{
+	struct mmc_card *emmc_card = NULL;
+	int size;
+	char cap_str[10];
+
+	if (NULL != emmc_host &&  NULL != emmc_host->card) {
+		emmc_card = emmc_host->card;
+		size = emmc_card->ext_csd.sectors;
+		zte_string_get_size((u64)size << 9, STRING_UNITS_10,
+				cap_str, sizeof(cap_str));
+
+		seq_printf(m, "%s-%s-%d/%d-%s-NA\n",
+				mmc_get_emmc_vendor(mmc_card_mid(emmc_card)),
+				mmc_card_name(emmc_card),
+				mmc_card_month(emmc_card),
+				mmc_card_year(emmc_card),
+				cap_str);
+	} else {
+		seq_puts(m, "No emmc info\n");
+	}
+
+	return 0;
+}
+
+static int msm_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mmc_proc_show, NULL);
+}
+
+static const struct file_operations mmc_proc_fops = {
+	.open		= msm_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int sdcard_proc_show(struct seq_file *m, void *v)
+{
+	struct mmc_card *emmc_card = NULL;
+	int size;
+	char cap_str[10];
+
+	if (NULL != sdcard_host &&  NULL != sdcard_host->card) {
+		emmc_card = sdcard_host->card;
+		size = emmc_card->csd.capacity << (emmc_card->csd.read_blkbits - 9);
+
+		string_get_size((u64)size << 9, STRING_UNITS_2,
+			cap_str, sizeof(cap_str));
+
+		seq_printf(m, "%s-%s\n", mmc_card_name(emmc_card), cap_str);
+	} else {
+		seq_puts(m, "No sdcard info\n");
+	}
+
+	return 0;
+}
+
+static int sdcard_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, sdcard_proc_show, NULL);
+}
+
+static const struct file_operations sdcard_proc_fops = {
+	.open		= sdcard_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+/* end  */
+
 void sdhci_msm_pm_qos_irq_unvote(struct sdhci_host *host, bool async)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -3948,7 +4111,8 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	struct resource *tlmm_memres = NULL;
 	void __iomem *tlmm_mem;
 	unsigned long flags;
-
+	static bool emmc_proc_init = false;
+	static bool sdcard_proc_init = false;
 	pr_debug("%s: Enter %s\n", dev_name(&pdev->dev), __func__);
 	msm_host = devm_kzalloc(&pdev->dev, sizeof(struct sdhci_msm_host),
 				GFP_KERNEL);
@@ -4412,6 +4576,23 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		device_remove_file(&pdev->dev, &msm_host->auto_cmd21_attr);
 	}
 	/* Successful initialization */
+/** ZTE MODIFY  for save emmc/sdcard info to proc/file*/
+	if (msm_host->pdata->mmc_bus_width == MMC_CAP_8_BIT_DATA) {
+		/*create emmc proc info*/
+		if (false == emmc_proc_init) {
+			emmc_host = msm_host->mmc;
+			proc_create("driver/emmc_id", 0, NULL, &mmc_proc_fops);
+			emmc_proc_init = true;
+		}
+	} else if (msm_host->pdata->mmc_bus_width == MMC_CAP_4_BIT_DATA) {
+		/*create sdcard proc info*/
+		if (false == sdcard_proc_init) {
+			sdcard_host = msm_host->mmc;
+			proc_create("driver/sdcard_id", 0, NULL,  &sdcard_proc_fops);
+			sdcard_proc_init = true;
+		}
+	}
+/** end */
 	goto out;
 
 remove_max_bus_bw_file:

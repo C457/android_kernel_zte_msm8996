@@ -3822,11 +3822,9 @@ static int pp_write_typeattr_map_item(policy_typeattr_map_item_t *item, struct p
 
 static int pp_free_bitmap(policy_bitmap_t *map)
 {
-	if (map) {
-		if (map->node_list) {
-			pp_free(map->node_list);
-			map->node_list = NULL;
-		}
+	if (map && map->node_list) {
+		pp_free(map->node_list);
+		map->node_list = NULL;
 	}
 
 	return 0;
@@ -3834,7 +3832,7 @@ static int pp_free_bitmap(policy_bitmap_t *map)
 
 static int pp_free_perm(policy_perm_t *perm)
 {
-	if (perm->name) {
+	if (perm && perm->name) {
 		pp_free(perm->name);
 		perm->name = NULL;
 	}
@@ -3844,7 +3842,7 @@ static int pp_free_perm(policy_perm_t *perm)
 
 static int pp_free_expr(policy_expression_t *expr)
 {
-	if (le32_to_cpu(expr->expr_type) == CEXPR_NAMES) {
+	if (expr && (le32_to_cpu(expr->expr_type) == CEXPR_NAMES)) {
 		(void)pp_free_bitmap(&(expr->names));
 	}
 
@@ -3859,7 +3857,7 @@ static int pp_free_cons(policy_constraints_t *cons)
 		(void)pp_free_expr(&(cons->expression_list[i]));
 	}
 
-	if (cons->expression_list) {
+	if (cons && cons->expression_list) {
 		pp_free(cons->expression_list);
 		cons->expression_list = NULL;
 	}
@@ -3871,7 +3869,7 @@ static int pp_free_expanded_range(policy_exp_range_t *range)
 {
 	(void)pp_free_bitmap(&(range->cat_low));
 
-	if (le32_to_cpu(range->sens_num) > 1) {
+	if (range && (le32_to_cpu(range->sens_num) > 1)) {
 		(void)pp_free_bitmap(&(range->cat_high));
 	}
 
@@ -3895,6 +3893,10 @@ static int pp_free_context(policy_context_t *con)
 static int pp_free_common_helper(policy_common_t *common)
 {
 	uint32_t i;
+
+	if (!common) {
+		return 0;
+	}
 
 	if (common->name) {
 		pp_free(common->name);
@@ -3933,6 +3935,10 @@ static int pp_free_common(policy_db_t *db)
 static int pp_free_classes_helper(policy_classes_t *classes)
 {
 	uint32_t i;
+
+	if (!classes) {
+		return 0;
+	}
 
 	if (classes->name) {
 		pp_free(classes->name);
@@ -3995,6 +4001,10 @@ static int pp_free_classes(policy_db_t *db)
 
 static int pp_free_roles_helper(policy_roles_t *roles)
 {
+	if (!roles) {
+		return 0;
+	}
+
 	if (roles->name) {
 		pp_free(roles->name);
 		roles->name = NULL;
@@ -4025,7 +4035,7 @@ static int pp_free_roles(policy_db_t *db)
 
 static int pp_free_types_helper(policy_types_t *types)
 {
-	if (types->name) {
+	if (types && types->name) {
 		pp_free(types->name);
 		types->name = NULL;
 	}
@@ -4052,6 +4062,10 @@ static int pp_free_types(policy_db_t *db)
 
 static int pp_free_users_helper(policy_users_t *users)
 {
+	if (!users) {
+		return 0;
+	}
+
 	if (users->name) {
 		pp_free(users->name);
 		users->name = NULL;
@@ -4083,7 +4097,7 @@ static int pp_free_users(policy_db_t *db)
 
 static int pp_free_bools_helper(policy_bools_t *bools)
 {
-	if (bools->name) {
+	if (bools && bools->name) {
 		pp_free(bools->name);
 		bools->name = NULL;
 	}
@@ -4110,6 +4124,10 @@ static int pp_free_bools(policy_db_t *db)
 
 static int pp_free_levels_helper(policy_levels_t *levels)
 {
+	if (!levels) {
+		return 0;
+	}
+
 	if (levels->name) {
 		pp_free(levels->name);
 		levels->name = NULL;
@@ -4139,7 +4157,7 @@ static int pp_free_levels(policy_db_t *db)
 
 static int pp_free_cats_helper(policy_cats_t *cats)
 {
-	if (cats->name) {
+	if (cats && cats->name) {
 		pp_free(cats->name);
 		cats->name = NULL;
 	}
@@ -4179,6 +4197,10 @@ static int pp_free_cond_expr(policy_cond_expr_t *expr)
 static int pp_free_condlist_item(policy_condlist_item_t *item)
 {
 	uint32_t i;
+
+	if (!item) {
+		return 0;
+	}
 
 	for (i = 0; i < item->expression_num; ++i) {
 		(void)pp_free_cond_expr(&(item->expression_list[i]));
@@ -4224,7 +4246,7 @@ static int pp_free_roleallow_item(policy_roleallow_item_t *item)
 
 static int pp_free_filenametrans_item(policy_filenametrans_item_t *item)
 {
-	if (item->name) {
+	if (item && item->name) {
 		pp_free(item->name);
 		item->name = NULL;
 	}
@@ -4235,6 +4257,10 @@ static int pp_free_filenametrans_item(policy_filenametrans_item_t *item)
 static int pp_free_ocon_isid(policy_ocontext_t *ocon)
 {
 	uint32_t i;
+
+	if (!ocon) {
+		return 0;
+	}
 
 	for (i = 0; i < ocon->isid_num; ++i) {
 		(void)pp_free_context(&(ocon->isid_list[i].con));
@@ -4251,6 +4277,10 @@ static int pp_free_ocon_isid(policy_ocontext_t *ocon)
 static int pp_free_ocon_fs(policy_ocontext_t *ocon)
 {
 	uint32_t i;
+
+	if (!ocon) {
+		return 0;
+	}
 
 	for (i = 0; i < ocon->fs_num; ++i) {
 		if (ocon->fs_list[i].name) {
@@ -4274,6 +4304,10 @@ static int pp_free_ocon_port(policy_ocontext_t *ocon)
 {
 	uint32_t i;
 
+	if (!ocon) {
+		return 0;
+	}
+
 	for (i = 0; i < ocon->port_num; ++i) {
 		(void)pp_free_context(&(ocon->port_list[i].con));
 	}
@@ -4289,6 +4323,10 @@ static int pp_free_ocon_port(policy_ocontext_t *ocon)
 static int pp_free_ocon_netif(policy_ocontext_t *ocon)
 {
 	uint32_t i;
+
+	if (!ocon) {
+		return 0;
+	}
 
 	for (i = 0; i < ocon->netif_num; ++i) {
 		if (ocon->netif_list[i].name) {
@@ -4312,6 +4350,10 @@ static int pp_free_ocon_node(policy_ocontext_t *ocon)
 {
 	uint32_t i;
 
+	if (!ocon) {
+		return 0;
+	}
+
 	for (i = 0; i < ocon->node_num; ++i) {
 		(void)pp_free_context(&(ocon->node_list[i].con));
 	}
@@ -4327,6 +4369,10 @@ static int pp_free_ocon_node(policy_ocontext_t *ocon)
 static int pp_free_ocon_fsuse(policy_ocontext_t *ocon)
 {
 	uint32_t i;
+
+	if (!ocon) {
+		return 0;
+	}
 
 	for (i = 0; i < ocon->fsuse_num; ++i) {
 		if (ocon->fsuse_list[i].name) {
@@ -4349,6 +4395,10 @@ static int pp_free_ocon_node6(policy_ocontext_t *ocon)
 {
 	uint32_t i;
 
+	if (!ocon) {
+		return 0;
+	}
+
 	for (i = 0; i < ocon->node6_num; ++i) {
 		(void)pp_free_context(&(ocon->node6_list[i].con));
 	}
@@ -4363,6 +4413,10 @@ static int pp_free_ocon_node6(policy_ocontext_t *ocon)
 
 static int pp_free_genfs_item_helper(policy_genfs_ocon_item_t *item)
 {
+	if (!item) {
+		return 0;
+	}
+
 	if (item->name) {
 		pp_free(item->name);
 		item->name = NULL;
@@ -4376,6 +4430,10 @@ static int pp_free_genfs_item_helper(policy_genfs_ocon_item_t *item)
 static int pp_free_genfs_item(policy_genfs_item_t *item)
 {
 	uint32_t i;
+
+	if (!item) {
+		return 0;
+	}
 
 	if (item->fstype) {
 		pp_free(item->fstype);
@@ -5349,7 +5407,7 @@ static int pp_build_policy(policy_db_t *db, struct policy_file *fp)
 
 static int pp_free_header(policy_db_t *db)
 {
-	if (db->target_str) {
+	if (db && db->target_str) {
 		pp_free(db->target_str);
 		db->target_str = NULL;
 	}
@@ -5374,6 +5432,10 @@ static int pp_free_permissive_map(policy_db_t *db)
 static int pp_free_symtab(policy_db_t *db)
 {
 	uint32_t i;
+
+	if (!db) {
+		return 0;
+	}
 
 	for (i = 0; i < db->sym_num; ++i) {
 		(void)pp_symtab_free_map[i](db);
@@ -5470,6 +5532,10 @@ static int pp_free_filenametrans(policy_db_t *db)
 static int pp_free_ocontext(policy_db_t *db)
 {
 	uint32_t i;
+
+	if (!db) {
+		return 0;
+	}
 
 	for (i = 0; i < db->ocontext.element_num; ++i) {
 		switch (i) {

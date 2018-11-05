@@ -72,6 +72,7 @@
 
 #define	EPERM		 1	/* Operation not permitted */
 
+#define TFA98XX_WAKE_LOCK_TIMEOUT_MS		2000
 
 static LIST_HEAD(profile_list); /* list of user selectable profiles */
 
@@ -1482,6 +1483,7 @@ static int tfa98xx_set_stop_ctl(struct snd_kcontrol *kcontrol,
 		if (tfa98xx_dev_family(tfa98xx->handle) == 2) {
 			do {
 				pr_info("%s reduce volume  apmgain=%d\n", __func__, apmgain);
+				wake_lock_timeout(&tfa98xx->i2c_wake_lock, TFA98XX_WAKE_LOCK_TIMEOUT_MS);
 				tfa_set_bf_volatile(tfa98xx->handle, TFA2_BF_AMPGAIN, apmgain);
 				usleep_range(5000, 5100);
 				apmgain = apmgain-30;
@@ -2917,6 +2919,7 @@ static int tfa98xx_probe(struct snd_soc_codec *codec)
 	ret = tfa98xx_load_container(tfa98xx);
 	pr_info("Container loading requested: %d\n", ret);
 
+	wake_lock_init(&tfa98xx->i2c_wake_lock, WAKE_LOCK_SUSPEND, "zte_tfa98xx_i2c_event");
 #if (KERNEL_VERSION(3, 16, 0) > LINUX_VERSION_CODE)
 	codec->control_data = tfa98xx->regmap;
 	ret = snd_soc_codec_set_cache_io(codec, 8, 16, SND_SOC_REGMAP);

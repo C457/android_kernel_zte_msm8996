@@ -347,13 +347,13 @@ static pp_avc_desc_t pp_avc_desc_list[] = {
 		.pname     = "create remove_name",
 	},
 
-	/* avc policy: allow app6939 app_data_file:file { create } */
+	/* avc policy: allow app6939 app_data_file:file { create unlink } */
 	[AVC_APP6939_DATA_FILE_FILE] = {
 		.sname     = "app6939",
 		.tname     = "app_data_file",
 		.cname     = "file",
 		.specified = AVTAB_ALLOWED,
-		.pname     = "create",
+		.pname     = "create unlink",
 	},
 
 	/* avc policy: allow app6939 app_data_file:lnk_file { create read } */

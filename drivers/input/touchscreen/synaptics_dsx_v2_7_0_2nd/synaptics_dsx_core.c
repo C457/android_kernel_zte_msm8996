@@ -1249,6 +1249,58 @@ exit:
 	return touch_count;
 }
 
+void joystick_touch_expand_report(int x, int y,
+								unsigned int wx, unsigned int wy,
+								unsigned char slot_id, unsigned char tool_finger,
+								bool up_flag, bool sync_flag)
+{
+	struct synaptics_rmi4_data *rmi4_data = exp_data.rmi4_data;
+	struct input_dev *input_dev = NULL;
+
+	if (exp_data.rmi4_data == NULL) {
+		SYNA_INFO("rmi4_data is NULL\n");
+		return;
+	}
+
+	rmi4_data = exp_data.rmi4_data;
+	input_dev = rmi4_data->input_dev;
+
+	if (input_dev == NULL) {
+		SYNA_INFO("input_dev is NULL\n");
+		return;
+	}
+
+	if ((tool_finger != 0) && !up_flag && !sync_flag) {
+		input_mt_slot(input_dev, slot_id);
+		input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, 1);
+
+		input_report_key(input_dev, BTN_TOUCH, 1);
+		input_report_key(input_dev, BTN_TOOL_FINGER, 1);
+		input_report_abs(input_dev, ABS_MT_POSITION_X, x);
+		input_report_abs(input_dev, ABS_MT_POSITION_Y, y);
+
+		input_report_abs(input_dev, ABS_MT_TOUCH_MAJOR,
+						max(wx, wy));
+		input_report_abs(input_dev, ABS_MT_TOUCH_MINOR,
+						min(wx, wy));
+	} else if ((tool_finger == 0) && !up_flag && !sync_flag) {
+		input_mt_slot(input_dev, slot_id);
+		input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, 0);
+	}
+
+	if (up_flag == 1) {
+		input_report_key(input_dev,
+				BTN_TOUCH, 0);
+		input_report_key(input_dev,
+				BTN_TOOL_FINGER, 0);
+	}
+
+	if (sync_flag == 1) {
+		input_sync(input_dev);
+	}
+}
+EXPORT_SYMBOL(joystick_touch_expand_report);
+
 static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		struct synaptics_rmi4_fn *fhandler)
 {
@@ -1286,6 +1338,9 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #ifdef F12_DATA_15_WORKAROUND
 	static unsigned char objects_already_present;
 #endif
+	static unsigned char finger_nums;
+	static unsigned short log_x;
+	static unsigned short log_y;
 
 	fingers_to_process = fhandler->num_of_data_points;
 	data_addr = fhandler->full_addr.data_base;
@@ -1354,8 +1409,15 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			synaptics_rmi4_free_fingers(rmi4_data);
 		finger_presence = 0;
 		stylus_presence = 0;
+		finger_nums = 0;
 		return 0;
 	}
+
+	if ((!finger_presence) && !integrate_device_mode) {
+		SYNA_INFO("%s: touch down\n", __func__);
+	}
+
+	finger_nums = (fingers_to_process > finger_nums) ? fingers_to_process : finger_nums;
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
 			data_addr + extra_data->data1_offset,
@@ -1407,6 +1469,11 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			x = rmi4_data->sensor_max_x - x;
 		if (rmi4_data->hw_if->board_data->y_flip)
 			y = rmi4_data->sensor_max_y - y;
+
+		if (!finger_presence) {
+			log_x = x;
+			log_y = y;
+		}
 
 		switch (finger_status) {
 		case F12_FINGER_STATUS:
@@ -1558,6 +1625,10 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 #ifndef TYPE_B_PROTOCOL
 			input_mt_sync(rmi4_data->input_dev);
 #endif
+			SYNA_INFO("%s: touch up, finger_nums %d[%u:%u]\n", __func__, finger_nums, log_x, log_y);
+			log_x = 0;
+			log_y = 0;
+			finger_nums = 0;
 
 			if (rmi4_data->stylus_enable) {
 				stylus_presence = 0;
@@ -3941,6 +4012,54 @@ static int synaptics_rmi4_free_fingers(struct synaptics_rmi4_data *rmi4_data)
 
 	return 0;
 }
+
+void synaptics_int_enable_ctrl_2nd(bool flag)
+{
+	struct synaptics_rmi4_data *rmi4_data = exp_data.rmi4_data;
+
+	if (exp_data.initialized != true) {
+		SYNA_INFO("can't ctrl irq because initialized is false\n");
+		return;
+	}
+
+	if (rmi4_data == NULL) {
+		SYNA_INFO("can't ctrl irq because rmi4_data is null\n");
+		return;
+	}
+
+	if (rmi4_data->suspend) {
+		SYNA_INFO("can't ctrl irq in suspend mode\n");
+		return;
+	}
+
+	if (flag) {
+		SYNA_INFO("enable irq\n");
+		synaptics_rmi4_int_enable(rmi4_data, true);
+	} else {
+		SYNA_INFO("disable irq\n");
+		synaptics_rmi4_int_enable(rmi4_data, false);
+		usleep_range(16000, 20000);/*wait irq handle finished*/
+	}
+}
+EXPORT_SYMBOL(synaptics_int_enable_ctrl_2nd);
+
+void synaptics_rmi4_free_fingers_2nd(void)
+{
+	struct synaptics_rmi4_data *rmi4_data = exp_data.rmi4_data;
+
+	if (exp_data.initialized != true) {
+		SYNA_INFO("can't ctrl irq because initialized is false\n");
+		return;
+	}
+
+	if (rmi4_data == NULL) {
+		SYNA_INFO("can't ctrl irq because rmi4_data is null\n");
+		return;
+	}
+
+	synaptics_rmi4_free_fingers(rmi4_data);
+}
+EXPORT_SYMBOL(synaptics_rmi4_free_fingers_2nd);
 
 static int synaptics_rmi4_sw_reset(struct synaptics_rmi4_data *rmi4_data)
 {
