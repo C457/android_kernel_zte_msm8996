@@ -126,7 +126,6 @@ struct smbchg_chip {
 
 	/* configuration parameters */
 	int				iterm_ma;
-	int				design_capacity;
 	int				usb_max_current_ma;
 	int				typec_current_ma;
 	int				dc_max_current_ma;
@@ -4106,10 +4105,7 @@ static int smbchg_icl_loop_disable_check(struct smbchg_chip *chip)
 
 	return rc;
 }
-int get_design_capacity(void)
-{
-	return zte_chip->design_capacity;
-}
+
 #define UNKNOWN_BATT_TYPE	"Unknown Battery"
 #define LOADING_BATT_TYPE	"Loading Battery Data"
 static int smbchg_config_chg_battery_type(struct smbchg_chip *chip)
@@ -7114,6 +7110,7 @@ static irqreturn_t batt_warm_handler(int irq, void *_chip)
 	smbchg_read(chip, &reg, chip->bat_if_base + RT_STS, 1);
 	chip->batt_warm = !!(reg & HOT_BAT_SOFT_BIT);
 	pr_smb(PR_INTERRUPT, "triggered: 0x%02x\n", reg);
+
 	smbchg_parallel_usb_check_ok(chip);
 	if (chip->psy_registered)
 		power_supply_changed(&chip->batt_psy);
@@ -7144,6 +7141,7 @@ static irqreturn_t batt_cool_handler(int irq, void *_chip)
 		power_supply_changed(&chip->batt_psy);
 	set_property_on_fg(chip, POWER_SUPPLY_PROP_HEALTH,
 			get_prop_batt_health(chip));
+
 	if (chip->batt_cool) {
 		set_property_on_fg(chip, POWER_SUPPLY_PROP_COOL_TEMP, COOL_RESUME_DECIDEGC);
 
@@ -7486,11 +7484,10 @@ static irqreturn_t usbin_uv_handler(int irq, void *_chip)
 			 */
 			/* Vote 500mA current limit */
 			pr_smb(PR_STATUS, "ICL_MODE_HIGH_CURRENT,set the USB current to 500mA\n");
-			rc = vote(chip->hw_aicl_rerun_disable_votable,
-				WEAK_CHARGER_HW_AICL_VOTER, true, CURRENT_500_MA);
+			rc = vote(chip->usb_icl_votable, WEAK_CHARGER_ICL_VOTER,
+					true, CURRENT_500_MA);
 			if (rc < 0)
-				pr_err("Couldn't disable hw aicl rerun rc=%d\n",
-						rc);
+				pr_err("Can't vote %d current limit rc=%d\n", CURRENT_500_MA, rc);
 		}
 		pr_smb(PR_MISC, "setting usb psy health UNSPEC_FAILURE\n");
 		rc = power_supply_set_health_state(chip->usb_psy,
@@ -8689,9 +8686,6 @@ static int smb_parse_dt(struct smbchg_chip *chip)
 	chip->apsd_rerun_config_enable = of_property_read_bool(node,
 				"qcom,apsd_rerun_config_enable");
 	pr_smb(PR_STATUS, "chip->apsd_rerun_config_enable:%d\n", chip->apsd_rerun_config_enable);
-	OF_PROP_READ(chip, chip->design_capacity,
-				"design_capacity", rc, 1);
-	pr_smb(PR_STATUS, "chip->design_capacity:%d\n", chip->design_capacity);
 
 	return 0;
 }
@@ -9297,6 +9291,10 @@ static void apsd_rerun_work(struct work_struct *work)
 /*10mins*/
 #define OFFCHG_FORCE_POWEROFF_DELTA (HZ*60*10)
 #define NORMAL_FORCE_POWEROFF_DELTA (HZ*60*1)
+
+#ifdef CONFIG_BOARD_FUJISAN
+extern void set_safe_chg_current(void);
+#endif
 
 static void update_heartbeat(struct work_struct *work)
 {

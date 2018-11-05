@@ -310,7 +310,7 @@ static struct fg_mem_data fg_backup_regs[FG_BACKUP_MAX] = {
 	BACKUP(MAH_TO_SOC,	0x4A0,   0,      4,     -EINVAL),
 };
 
-static int fg_debug_mask;
+static int fg_debug_mask = FG_STATUS | FG_IRQS | FG_AGING;
 module_param_named(
 	debug_mask, fg_debug_mask, int, S_IRUSR | S_IWUSR
 );
@@ -570,6 +570,7 @@ struct fg_chip {
 	int			ocv_junction_p2p3;
 	int			nom_cap_uah;
 	int			actual_cap_uah;
+	int			rated_cap_mah;
 	int			status;
 	int			prev_status;
 	int			health;
@@ -647,6 +648,8 @@ struct fg_chip {
 	bool			*batt_range_ocv;
 	int			*batt_range_pct;
 };
+
+struct fg_chip *zte_fg_chip = NULL;
 
 /* FG_MEMIF DEBUGFS structures */
 #define ADDR_LEN	4	/* 3 byte address + 1 space character */
@@ -4720,7 +4723,7 @@ static int fg_power_get_property(struct power_supply *psy,
 		val->intval = chip->nom_cap_uah;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		val->intval = chip->learning_data.learned_cc_uah;
+		val->intval = chip->actual_cap_uah;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		val->intval = chip->learning_data.cc_uah;
@@ -6400,6 +6403,7 @@ static int fg_batt_profile_init(struct fg_chip *chip)
 	const char *data, *batt_type_str;
 	bool tried_again = false, vbat_in_range, profiles_same;
 	u8 reg = 0;
+	int vdiff_coefficient  = 1;
 
 wait:
 	fg_stay_awake(&chip->profile_wakeup_source);
@@ -6488,6 +6492,14 @@ wait:
 			pr_err("Could not read rslow comp thr: %d\n", rc);
 	}
 
+	rc = of_property_read_u32(profile_node, "qcom,nom-batt-capacity-mah",
+					&chip->rated_cap_mah);
+	if (rc) {
+		chip->rated_cap_mah = -EINVAL;
+		if (rc != -EINVAL)
+			pr_err("Could not read rated_cap_mah: %d\n", rc);
+	}
+
 	rc = of_property_read_u32(profile_node, "qcom,max-voltage-uv",
 					&chip->batt_max_voltage_uv);
 
@@ -6549,13 +6561,20 @@ wait:
 		goto no_profile;
 	}
 
-
+	if (is_usb_present(chip)) {
+		pr_info("usb present, vbat_est_diff*3\n");
+		vdiff_coefficient = 3;
+	}
 	vbat_in_range = get_vbat_est_diff(chip)
-			< settings[FG_MEM_VBAT_EST_DIFF].value * 1000;
+			< settings[FG_MEM_VBAT_EST_DIFF].value * 1000 * vdiff_coefficient;
 
 	pr_info("fg_data_voltage:%d fg_data_cpred voltage:%d vbat_est_diff:%d vbat_in_range=%d\n",
 		fg_data[FG_DATA_VOLTAGE].value, fg_data[FG_DATA_CPRED_VOLTAGE].value,
 		settings[FG_MEM_VBAT_EST_DIFF].value, vbat_in_range);
+
+	pr_info("fg_data_current:%d fg_data_batt esr :%d fg_data_ocv:%d fg_data_soc:%d\n",
+		fg_data[FG_DATA_CURRENT].value, fg_data[FG_DATA_BATT_ESR].value,
+		fg_data[FG_DATA_OCV].value, fg_data[FG_DATA_BATT_SOC].value);
 
 	profiles_same = memcmp(chip->batt_profile, data,
 					PROFILE_COMPARE_LEN) == 0;
@@ -6685,7 +6704,8 @@ done:
 	if (chip->power_supply_registered)
 		power_supply_changed(&chip->bms_psy);
 	fg_relax(&chip->profile_wakeup_source);
-	pr_info("Battery SOC: %d, V: %duV\n", get_prop_capacity(chip),
+	pr_info("Rated cap: %d, Battery SOC: %d, V: %duV\n",
+		chip->rated_cap_mah, get_prop_capacity(chip),
 		fg_data[FG_DATA_VOLTAGE].value);
 	complete_all(&chip->fg_reset_done);
 	return rc;
@@ -6714,6 +6734,11 @@ reschedule:
 		msecs_to_jiffies(BATTERY_PSY_WAIT_MS));
 	fg_relax(&chip->profile_wakeup_source);
 	return 0;
+}
+
+int get_design_capacity(void)
+{
+	return zte_fg_chip->rated_cap_mah;
 }
 
 static void check_empty_work(struct work_struct *work)
@@ -8790,6 +8815,7 @@ static int fg_probe(struct spmi_device *spmi)
 	u8 subtype, reg;
 	int rc = 0;
 
+	pr_info("Enter fg_probe\n");
 	if (!spmi) {
 		pr_err("no valid spmi pointer\n");
 		return -ENODEV;
@@ -9023,7 +9049,7 @@ static int fg_probe(struct spmi_device *spmi)
 		chip->revision[DIG_MAJOR], chip->revision[DIG_MINOR],
 		chip->revision[ANA_MAJOR], chip->revision[ANA_MINOR],
 		chip->pmic_subtype);
-
+	zte_fg_chip = chip;
 	return rc;
 
 power_supply_unregister:
