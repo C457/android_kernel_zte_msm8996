@@ -1135,6 +1135,7 @@ static int rmnet_function_bind_config(struct android_usb_function *f,
 	static int rmnet_initialized, ports;
 
 	if (!rmnet_initialized) {
+		rmnet_initialized = 1;
 		/*init rmnet transports, 2/5*/
 		if (rmnet_transports_init[0]) {
 			strlcpy(buf, rmnet_transports_init, sizeof(buf));
