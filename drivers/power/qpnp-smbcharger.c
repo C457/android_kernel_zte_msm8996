@@ -387,6 +387,7 @@ enum wake_reason {
 #define ESR_PULSE_FCC_VOTER	"ESR_PULSE_FCC_VOTER"
 #define BATT_TYPE_FCC_VOTER	"BATT_TYPE_FCC_VOTER"
 #define RESTRICTED_CHG_FCC_VOTER	"RESTRICTED_CHG_FCC_VOTER"
+#define THERMAL_FCC_VOTER "THERMAL_FCC_VOTER"
 
 /* ICL VOTERS */
 #define PSY_ICL_VOTER		"PSY_ICL_VOTER"
@@ -3313,7 +3314,54 @@ static int smbchg_system_temp_level_set(struct smbchg_chip *chip,
 
 	if (lvl_sel == chip->therm_lvl_sel)
 		return 0;
+#if 1
+	pr_info("lvl_sel ibat: %d, thermal_mitigation:%d, chip->cfg_fastchg_current_ma:%d\n",
+			lvl_sel, (int)chip->thermal_mitigation[lvl_sel], chip->cfg_fastchg_current_ma);
+	mutex_lock(&chip->therm_lvl_lock);
+	prev_therm_lvl = chip->therm_lvl_sel;
+	chip->therm_lvl_sel = lvl_sel;
+	if (chip->therm_lvl_sel == (chip->thermal_levels - 1)) {
+		/*
+		 * Disable charging if highest value selected by
+		 * setting the DC and USB path in suspend
+		 */
+		rc = vote(chip->battchg_suspend_votable, BATTCHG_USER_EN_VOTER,
+				true, 0);
+		if (rc < 0) {
+			dev_err(chip->dev,
+				"Couldn't set batchg suspend rc %d\n", rc);
+			goto out;
+		}
+	}
+	if (chip->therm_lvl_sel == 0) {
+		rc = vote(chip->fcc_votable, THERMAL_FCC_VOTER, false, 0);
+		if (rc < 0)
+			pr_err("Couldn't disable battchg thermal fcc vote rc=%d\n", rc);
+	} else {
+		thermal_icl_ma =
+			(int)chip->thermal_mitigation[chip->therm_lvl_sel];
+		rc = vote(chip->fcc_votable, THERMAL_FCC_VOTER, true,
+					thermal_icl_ma);
+		if (rc < 0)
+			pr_err("Couldn't vote for battchg thermal fcc rc=%d\n", rc);
 
+	}
+	if (prev_therm_lvl == chip->thermal_levels - 1) {
+		/*
+		 * If previously highest value was selected charging must have
+		 * been disabed. Enable charging by taking the DC and USB path
+		 * out of suspend.
+		 */
+
+		rc = vote(chip->battchg_suspend_votable, BATTCHG_USER_EN_VOTER,
+				false, 0);
+		if (rc < 0) {
+			dev_err(chip->dev,
+				"Couldn't set batchg suspend rc %d\n", rc);
+			goto out;
+		}
+	}
+#else
 	mutex_lock(&chip->therm_lvl_lock);
 	pr_info("lvl_sel iusb: %d, thermal_mitigation:%d, chip->cfg_fastchg_current_ma:%d\n",
 			lvl_sel, (int)chip->thermal_mitigation[lvl_sel], chip->cfg_fastchg_current_ma);
@@ -3383,6 +3431,7 @@ static int smbchg_system_temp_level_set(struct smbchg_chip *chip,
 			goto out;
 		}
 	}
+#endif
 out:
 	mutex_unlock(&chip->therm_lvl_lock);
 	return rc;
@@ -7061,7 +7110,6 @@ static irqreturn_t batt_warm_handler(int irq, void *_chip)
 	smbchg_read(chip, &reg, chip->bat_if_base + RT_STS, 1);
 	chip->batt_warm = !!(reg & HOT_BAT_SOFT_BIT);
 	pr_smb(PR_INTERRUPT, "triggered: 0x%02x\n", reg);
-
 	smbchg_parallel_usb_check_ok(chip);
 	if (chip->psy_registered)
 		power_supply_changed(&chip->batt_psy);
@@ -7074,6 +7122,7 @@ static irqreturn_t batt_warm_handler(int irq, void *_chip)
 
 	return IRQ_HANDLED;
 }
+
 #define COOL_DECIDEGC 100
 #define COOL_RESUME_DECIDEGC 120
 
@@ -7081,6 +7130,7 @@ static irqreturn_t batt_cool_handler(int irq, void *_chip)
 {
 	struct smbchg_chip *chip = _chip;
 	u8 reg = 0;
+	int rc;
 
 	smbchg_read(chip, &reg, chip->bat_if_base + RT_STS, 1);
 	chip->batt_cool = !!(reg & COLD_BAT_SOFT_BIT);
@@ -7090,10 +7140,30 @@ static irqreturn_t batt_cool_handler(int irq, void *_chip)
 		power_supply_changed(&chip->batt_psy);
 	set_property_on_fg(chip, POWER_SUPPLY_PROP_HEALTH,
 			get_prop_batt_health(chip));
-	if (chip->batt_cool)
-        set_property_on_fg(chip, POWER_SUPPLY_PROP_COOL_TEMP,COOL_RESUME_DECIDEGC);
-	else
-        set_property_on_fg(chip, POWER_SUPPLY_PROP_COOL_TEMP,COOL_DECIDEGC);
+	if (chip->batt_cool) {
+		set_property_on_fg(chip, POWER_SUPPLY_PROP_COOL_TEMP, COOL_RESUME_DECIDEGC);
+
+		if (chip->float_voltage_comp != -EINVAL) {
+			rc = smbchg_float_voltage_comp_set(chip, 0);
+			if (rc < 0) {
+				dev_err(chip->dev, "Could not set float voltage comp rc = %d\n", rc);
+				return rc;
+			}
+			pr_smb(PR_STATUS, "batt cool, can chg to full, set float voltage comp to 0\n");
+		}
+	} else {
+		set_property_on_fg(chip, POWER_SUPPLY_PROP_COOL_TEMP, COOL_DECIDEGC);
+
+		if (chip->float_voltage_comp != -EINVAL) {
+			rc = smbchg_float_voltage_comp_set(chip, chip->float_voltage_comp);
+			if (rc < 0) {
+				dev_err(chip->dev, "Couldn't set float voltage comp rc = %d\n", rc);
+				return rc;
+			}
+			pr_smb(PR_STATUS, "batt not cool, set float voltage comp back to %d\n",
+				chip->float_voltage_comp);
+		}
+	}
 	return IRQ_HANDLED;
 }
 
@@ -9019,8 +9089,8 @@ static int smbchg_check_chg_version(struct smbchg_chip *chip)
 				pmic_rev_id->pmic_subtype);
 	}
 
-	pr_smb(PR_STATUS, "pmic=%s, wa_flags=0x%x, hvdcp_supported=%s\n",
-			pmic_rev_id->pmic_name, chip->wa_flags,
+	pr_smb(PR_STATUS, "pmic=%s, sub_type=%d, wa_flags=0x%x, hvdcp_supported=%s\n",
+			pmic_rev_id->pmic_name, pmic_rev_id->pmic_subtype, chip->wa_flags,
 			chip->hvdcp_not_supported ? "false" : "true");
 
 	return 0;
@@ -9219,10 +9289,6 @@ static void apsd_rerun_work(struct work_struct *work)
 /*10mins*/
 #define OFFCHG_FORCE_POWEROFF_DELTA (HZ*60*10)
 #define NORMAL_FORCE_POWEROFF_DELTA (HZ*60*1)
-
-#ifdef CONFIG_BOARD_FUJISAN
-extern void set_safe_chg_current(void);
-#endif
 
 static void update_heartbeat(struct work_struct *work)
 {
@@ -9573,8 +9639,7 @@ static int smbchg_probe(struct spmi_device *spmi)
 	INIT_WORK(&chip->usb_set_online_work, smbchg_usb_update_online_work);
 	INIT_DELAYED_WORK(&chip->update_heartbeat_work, update_heartbeat);
 	INIT_DELAYED_WORK(&chip->apsd_rerun_work, apsd_rerun_work);
-	INIT_DELAYED_WORK(&chip->parallel_en_work,
-			smbchg_parallel_usb_en_work);
+	INIT_DELAYED_WORK(&chip->parallel_en_work, smbchg_parallel_usb_en_work);
 	INIT_DELAYED_WORK(&chip->vfloat_adjust_work, smbchg_vfloat_adjust_work);
 	INIT_DELAYED_WORK(&chip->shipmode_work, shipmode_work_enter);
 	INIT_DELAYED_WORK(&chip->poweroff_work, poweroff_work_enter);
