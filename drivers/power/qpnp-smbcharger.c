@@ -9741,17 +9741,7 @@ static int smbchg_probe(struct spmi_device *spmi)
 	}
 	dev_info(&spmi->dev, "s3_src_reg: %d\n", s3_src_reg);
 
-#ifdef ZTE_AILSA_II_VR
-	pr_info("ZTE_AILSA_II_VR defined\n");
-	//if (s3_src_reg != 2)
-	//	smb_set_shipmode();
-#else
-	pr_info("ZTE_AILSA_II_VR not defined\n");
-	//if (s3_src_reg != 0)
-	//	smb_set_shipmode();
-#endif
-	pr_info("ZTE_AILSA_II_VR not defined\n");
-	if (s3_src_reg != 0)
+	if (s3_src_reg != 2)
 		smb_set_shipmode();
 	chip->last_enable_to_shutdown_status = -1;
 	chip->probe_rerun_apsd = 0;
