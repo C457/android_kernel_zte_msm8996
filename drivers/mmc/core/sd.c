@@ -1164,6 +1164,11 @@ static void mmc_sd_detect(struct mmc_host *host)
 	if (mmc_try_get_card(host->card, 3000))
 		return;
 
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
+	if (mmc_bus_needs_resume(host))
+		mmc_resume_bus(host);
+#endif
+
 	/*
 	 * Just check if our card has been removed.
 	 */
