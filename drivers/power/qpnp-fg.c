@@ -325,12 +325,7 @@ module_param_named(
 	first_est_dump, fg_est_dump, int, S_IRUSR | S_IWUSR
 );
 
-char *fg_batt_type_default = "zte_p894a01_3000mah";
-#if defined(CONFIG_BOARD_CANDICE)
-char *fg_batt_type = "ZTE_BATTERY_DATA_ID_2";
-#else
-char *fg_batt_type = "ZTE_BATTERY_DATA_ID_1";
-#endif
+char *fg_batt_type = "zte_p996a01_3250mah";
 
 module_param_named(
 	battery_type, fg_batt_type, charp, S_IRUSR | S_IWUSR
@@ -6439,14 +6434,8 @@ wait:
 	if (fg_debug_mask & FG_STATUS)
 		pr_info("battery id = %d\n",
 				get_sram_prop_now(chip, FG_DATA_BATT_ID));
-#if defined(CONFIG_BOARD_AILSA_II)
-	profile_node = of_batterydata_get_best_profile(batt_node, "bms",
-							NULL);
-	fg_batt_type = NULL;
-#else
 	profile_node = of_batterydata_get_best_profile(batt_node, "bms",
 							fg_batt_type);
-#endif
 	if (IS_ERR_OR_NULL(profile_node)) {
 		rc = PTR_ERR(profile_node);
 		if (rc == -EPROBE_DEFER) {
