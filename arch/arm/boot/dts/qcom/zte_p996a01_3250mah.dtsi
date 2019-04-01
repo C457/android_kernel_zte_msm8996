@@ -5,8 +5,7 @@ qcom,zte_p996A01_3250mah {
 	qcom,nom-batt-capacity-mah = <3250>;
 	qcom,batt-id-kohm = <180>;    /*no used zte_pm*/
 	qcom,battery-beta = <3435>;
-	/*qcom,battery-type = "zte_p996a01_3250mah";*/
-	qcom,battery-type = "ZTE_BATTERY_DATA_ID_1";  /*ZTE all batterys used the same type name */
+	qcom,battery-type = "zte_p996a01_3250mah";
 	qcom,chg-rslow-comp-c1 = <3454174>;
 	qcom,chg-rslow-comp-c2 = <5346737>;
 	qcom,chg-rs-to-rslow = <1175862>;

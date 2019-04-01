@@ -4085,7 +4085,6 @@ static void smbchg_aicl_deglitch_wa_check(struct smbchg_chip *chip)
 	smbchg_aicl_deglitch_wa_en(chip, chip->vbat_above_headroom);
 }
 
-extern char *fg_batt_type_default;
 extern char *fg_batt_type;
 
 #define MISC_TEST_REG		0xE2
@@ -4141,17 +4140,10 @@ static int smbchg_config_chg_battery_type(struct smbchg_chip *chip)
 	}
 
 	profile_node = of_batterydata_get_best_profile(batt_node,
-							"bms", fg_batt_type);
-	if (!profile_node) {
-		pr_err("couldn't find profile handle, battery_type1 is %s\n", fg_batt_type);
-		profile_node = of_batterydata_get_best_profile(batt_node, "bms",
-						fg_batt_type_default);
+							"bms", NULL);
 	if (!profile_node) {
 		pr_err("couldn't find profile handle\n");
 		return -EINVAL;
-		}else{
-			pr_debug("battery type is %s\n", fg_batt_type_default);
-		}
 	}else{
 		pr_debug("battery type is %s\n", fg_batt_type);
 	}
