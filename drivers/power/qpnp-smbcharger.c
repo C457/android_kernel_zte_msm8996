@@ -2291,6 +2291,7 @@ static int smbchg_get_aicl_level_ma(struct smbchg_chip *chip)
 		pr_warn("invalid AICL value: %02x\n", reg);
 		return 0;
 	}
+      	pr_debug("aicl current=%dmA,reg:%d\n", chip->tables.usb_ilim_ma_table[reg],reg);
 	return chip->tables.usb_ilim_ma_table[reg];
 }
 
