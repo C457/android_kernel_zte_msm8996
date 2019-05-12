@@ -3624,7 +3624,7 @@ static bool is_battery_missing(struct fg_chip *chip)
 		return false;
 	}
 
-	pr_info("fg_batt_sts = %d\n", fg_batt_sts);
+	pr_debug("fg_batt_sts = %d\n", fg_batt_sts);
 	return (fg_batt_sts & BATT_MISSING_STS) ? true : false;
 }
 
@@ -6450,6 +6450,7 @@ wait:
 			goto no_profile;
 		}
 	}
+	pr_info("fg_batt_type is %s\n", fg_batt_type);
 
 	/* read rslow compensation values if they're available */
 	rc = of_property_read_u32(profile_node, "qcom,chg-rs-to-rslow",
