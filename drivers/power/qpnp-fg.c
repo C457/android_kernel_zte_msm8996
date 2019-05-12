@@ -248,7 +248,7 @@ static struct fg_mem_setting settings[FG_MEM_SETTING_MAX] = {
 	SETTING(CHG_TERM_CURRENT, 0x4F8,   2,      250),
 	SETTING(IRQ_VOLT_EMPTY,	 0x458,   3,      3100),
 	SETTING(CUTOFF_VOLTAGE,	 0x40C,   0,      3200),
-	SETTING(VBAT_EST_DIFF,	 0x000,   0,      200),
+	SETTING(VBAT_EST_DIFF,	 0x000,   0,      150),
 	SETTING(DELTA_SOC,	 0x450,   3,      2),
 	SETTING(BATT_LOW,	 0x458,   0,      4200),
 	SETTING(THERM_DELAY,	 0x4AC,   3,      0),
@@ -6437,24 +6437,19 @@ wait:
 	}
 
 	if (fg_debug_mask & FG_STATUS)
-		pr_info("battery id = %d\n",
-				get_sram_prop_now(chip, FG_DATA_BATT_ID));
-#if defined(CONFIG_BOARD_AILSA_II)
-	profile_node = of_batterydata_get_best_profile(batt_node, "bms",
-							NULL);
-	fg_batt_type = NULL;
-#else
-	profile_node = of_batterydata_get_best_profile(batt_node, "bms",
-							fg_batt_type);
-#endif
-	if (IS_ERR_OR_NULL(profile_node)) {
-		rc = PTR_ERR(profile_node);
-		if (rc == -EPROBE_DEFER) {
-			goto reschedule;
-		} else {
-			pr_err("couldn't find profile handle rc=%d\n", rc);
+		pr_info("battery id = %d\n", get_sram_prop_now(chip, FG_DATA_BATT_ID));
+
+	profile_node = of_batterydata_get_best_profile(batt_node, "bms", fg_batt_type);
+	if (!profile_node) {
+		pr_err("couldn't find profile handle ,battery_type1 is %s\n", fg_batt_type);
+		profile_node = of_batterydata_get_best_profile(batt_node, "bms",
+							fg_batt_type_default);
+		if (!profile_node) {
+			pr_err("couldn't find profile, use %s\n", fg_batt_type_default);
+			rc = -ENODATA;
 			goto no_profile;
-		}
+		} else
+			fg_batt_type = fg_batt_type_default;
 	}
 	pr_info("fg_batt_type is %s\n", fg_batt_type);
 
