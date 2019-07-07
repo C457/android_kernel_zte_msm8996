@@ -61,7 +61,7 @@ endif
 #/*zte add for lcd common function begin */
 config ZTE_LCD_COMMON_FUNCTION
         bool "Support for ZTE lcd common function"
-        default y
+        default n
 
 config ZTE_LCD_BACKLIGHT_LEVEL_CURVE
         depends on ZTE_LCD_COMMON_FUNCTION
