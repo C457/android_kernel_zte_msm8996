@@ -1152,6 +1152,12 @@ config TOUCHSCREEN_HIMAX_CHIPSET
 
 source "drivers/input/touchscreen/hxchipset/Kconfig"
 
+config ZTE_TS_PINCTRL
+       bool "ZTE touchscreen pinctrl"
+       depends on I2C && INPUT
+       help
+         This driver provides the public func support for pinctrl.
+
 config FORCE_TOUCH_NDT
        tristate "Force Touch by NDT"
        depends on I2C && INPUT && TOUCHSCREEN_SYNAPTICS_DSX_ZTE
