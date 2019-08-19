@@ -29,6 +29,7 @@
 #endif
 
 #ifdef CONFIG_BOARD_FUJISAN
+#include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 #endif
 
