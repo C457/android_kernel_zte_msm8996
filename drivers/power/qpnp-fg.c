@@ -6837,11 +6837,12 @@ done:
 	fg_relax(&chip->profile_wakeup_source);
 #ifndef CONFIG_BOARD_FUJISAN
 	pr_info("Battery SOC: %d, V: %duV\n", get_prop_capacity(chip),
-else
+		fg_data[FG_DATA_VOLTAGE].value);
+#else
 	pr_info("Rated cap: %d, Battery SOC: %d, V: %duV\n",
 		chip->rated_cap_mah, get_prop_capacity(chip),
-#endif
 		fg_data[FG_DATA_VOLTAGE].value);
+#endif
 	complete_all(&chip->fg_reset_done);
 	return rc;
 no_profile:
