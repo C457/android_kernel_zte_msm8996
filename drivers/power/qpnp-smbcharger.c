@@ -273,6 +273,9 @@ struct smbchg_chip {
 	/*zte add works start*/
 	struct delayed_work		update_heartbeat_work;
 	struct delayed_work		soft_cc_monitor_work;
+#ifdef CONFIG_BOARD_FUJISAN
+	struct delayed_work		set_chg_current_batt_health;
+#endif
 	//struct delayed_work		charge_type_update_work; //ZTE
 	struct delayed_work		shipmode_work; //ZTE
 	struct delayed_work		poweroff_work; //ZTE
@@ -387,6 +390,10 @@ enum wake_reason {
 #define ESR_PULSE_FCC_VOTER	"ESR_PULSE_FCC_VOTER"
 #define BATT_TYPE_FCC_VOTER	"BATT_TYPE_FCC_VOTER"
 #define RESTRICTED_CHG_FCC_VOTER	"RESTRICTED_CHG_FCC_VOTER"
+#ifdef CONFIG_BOARD_FUJISAN
+#define VBATT_FCC_VOTER "VBATT_FCC_VOTER"
+#define BATT_HEALTH_FCC_VOTER "BATT_HEALTH_FCC_VOTER"
+#endif
 #define THERMAL_FCC_VOTER "THERMAL_FCC_VOTER"
 
 /* ICL VOTERS */
@@ -507,7 +514,11 @@ module_param_named(
 	int, S_IRUSR | S_IWUSR
 );
 
+#ifdef CONFIG_BOARD_FUJISAN
+static int smbchg_main_chg_icl_percent = 50;
+#else
 static int smbchg_main_chg_icl_percent = 60;
+#endif
 module_param_named(
 	main_chg_icl_percent, smbchg_main_chg_icl_percent,
 	int, S_IRUSR | S_IWUSR
@@ -519,7 +530,11 @@ module_param_named(
 	int, S_IRUSR | S_IWUSR
 );
 
+#ifdef CONFIG_BOARD_FUJISAN
+static int smbchg_default_hvdcp3_icl_ma = 2500;
+#else
 static int smbchg_default_hvdcp3_icl_ma = 3000;
+#endif
 module_param_named(
 	default_hvdcp3_icl_ma, smbchg_default_hvdcp3_icl_ma,
 	int, S_IRUSR | S_IWUSR
@@ -2178,7 +2193,12 @@ static int smbchg_set_fastchg_current_raw(struct smbchg_chip *chip,
 #define USBIN_ACTIVE_PWR_SRC_BIT	BIT(1)
 #define DCIN_ACTIVE_PWR_SRC_BIT		BIT(0)
 #define PARALLEL_REENABLE_TIMER_MS	1000
+#ifdef CONFIG_BOARD_FUJISAN
+#define PARALLEL_CHG_THRESHOLD_CURRENT	1200
+#else
 #define PARALLEL_CHG_THRESHOLD_CURRENT	1800
+#endif
+
 static bool smbchg_is_usbin_active_pwr_src(struct smbchg_chip *chip)
 {
 	int rc;
@@ -2633,11 +2653,21 @@ static bool smbchg_is_parallel_usb_ok(struct smbchg_chip *chip,
 		return false;
 	}
 
+#ifdef CONFIG_BOARD_FUJISAN
+	/* ZTE if health is warm or cool,  to avoid all current go through PMI,
+	*  and cause hot point around PMI, set true when warm, cool or good status
+	*/
+	if ((get_prop_batt_health(chip) == POWER_SUPPLY_HEALTH_COLD) ||
+		(get_prop_batt_health(chip) ==  POWER_SUPPLY_HEALTH_OVERHEAT)) {
+		pr_smb(PR_STATUS, "JEITA cold or overheat, skipping\n");
+		return false;
+	}
+#else
 	if (get_prop_batt_health(chip) != POWER_SUPPLY_HEALTH_GOOD) {
 		pr_smb(PR_STATUS, "JEITA active, skipping\n");
 		return false;
 	}
-
+#endif
 	rc = smbchg_read(chip, &reg, chip->misc_base + IDEV_STS, 1);
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't read status 5 rc = %d\n", rc);
@@ -2963,6 +2993,98 @@ static int set_fastchg_current_vote_cb(struct votable *votable,
 	smbchg_parallel_usb_check_ok(chip);
 	return 0;
 }
+
+#ifdef CONFIG_BOARD_FUJISAN
+/* 0.7C for 2930mAh is 2000mA*/
+#define SAFE_CHG_CURRENT_HIGH_VBAT 2000
+#define SAFE_CHG_CURRENT_WARM_TEMP 1800
+/* 0.3C for 2930mAh */
+#define SAFE_CHG_CURRENT_COOL_TEMP 800
+int smbchg_set_chg_current_high_vbatt(bool en)
+{
+	int rc = 0;
+
+	if (zte_chip != NULL) {
+		pr_smb(PR_STATUS, "%s FCC %d\n", en?"set":"clear",
+					SAFE_CHG_CURRENT_HIGH_VBAT);
+		rc = vote(zte_chip->fcc_votable, VBATT_FCC_VOTER, en,
+					SAFE_CHG_CURRENT_HIGH_VBAT);
+		if (rc < 0)
+			pr_err("Couldn't vote en rc %d\n", rc);
+		return rc;
+	}
+	pr_smb(PR_STATUS, "zte_chip NULL\n");
+	return -EFAULT;
+}
+
+int smbchg_set_chg_current_health(bool en, int ibat)
+{
+	int rc = 0;
+
+	if (zte_chip != NULL) {
+		pr_smb(PR_STATUS, "%s FCC %d\n", en?"set":"clear",
+					SAFE_CHG_CURRENT_HIGH_VBAT);
+		rc = vote(zte_chip->fcc_votable, BATT_HEALTH_FCC_VOTER, en,
+					ibat);
+		if (rc < 0)
+			pr_err("Couldn't vote en rc %d\n", rc);
+		return rc;
+	}
+	pr_smb(PR_STATUS, "zte_chip NULL\n");
+	return -EFAULT;
+}
+
+#define BATT_TEMP_COOL_CLEAR_THRESHOLD 110
+#define BATT_TEMP_WARM_CLEAR_THRESHOLD 410
+#define BATT_COOL_CHECK_CYCLE_MS 5000
+
+extern void narrow_jeita_cool_area(void);
+extern void narrow_jeita_warm_area(void);
+extern void set_jeita_para_fujisan_default(void);
+
+static void set_chg_current_batt_health_work(struct work_struct *work)
+{
+	int temp;
+	bool usb_present = false;
+
+	struct smbchg_chip *chip = container_of(work,
+				struct smbchg_chip,
+				set_chg_current_batt_health.work);
+	struct power_supply *parallel_psy = get_parallel_psy(chip);
+
+	if (!parallel_psy)
+		return;
+
+	if (chip != NULL) {
+		pr_smb(PR_STATUS, "cool %d, warm %d\n", chip->batt_cool, chip->batt_warm);
+		temp = get_prop_batt_temp(chip);
+		usb_present =  is_usb_present(chip);
+
+		if (chip->batt_cool) {
+			pr_smb(PR_STATUS, "set cool FCC %d, temp %d\n",
+				SAFE_CHG_CURRENT_COOL_TEMP, temp);
+			narrow_jeita_cool_area();
+			smbchg_set_chg_current_health(true, SAFE_CHG_CURRENT_COOL_TEMP);
+
+		} else if (temp > BATT_TEMP_COOL_CLEAR_THRESHOLD &&
+			temp < BATT_TEMP_WARM_CLEAR_THRESHOLD) {
+			pr_smb(PR_STATUS, "clear FCC vote, temp %d\n", temp);
+			set_jeita_para_fujisan_default();
+			smbchg_set_chg_current_health(false, SAFE_CHG_CURRENT_WARM_TEMP);
+		} else if (chip->batt_warm) {
+			pr_smb(PR_STATUS, "set warm FCC %d, temp %d\n",
+				SAFE_CHG_CURRENT_WARM_TEMP, temp);
+			narrow_jeita_warm_area();
+			smbchg_set_chg_current_health(true, SAFE_CHG_CURRENT_WARM_TEMP);
+		}
+
+		if (usb_present)
+			schedule_delayed_work(&chip->set_chg_current_batt_health,
+				      round_jiffies_relative(msecs_to_jiffies
+					(BATT_COOL_CHECK_CYCLE_MS)));
+	}
+}
+#endif
 
 static int smbchg_set_fastchg_current_user(struct smbchg_chip *chip,
 							int current_ma)
@@ -3314,7 +3436,7 @@ static int smbchg_system_temp_level_set(struct smbchg_chip *chip,
 
 	if (lvl_sel == chip->therm_lvl_sel)
 		return 0;
-#if 1
+#ifdef CONFIG_BOARD_FUJISAN
 	pr_info("lvl_sel ibat: %d, thermal_mitigation:%d, chip->cfg_fastchg_current_ma:%d\n",
 			lvl_sel, (int)chip->thermal_mitigation[lvl_sel], chip->cfg_fastchg_current_ma);
 	mutex_lock(&chip->therm_lvl_lock);
@@ -5509,6 +5631,13 @@ static void handle_usb_insertion(struct smbchg_chip *chip)
 
 	charge_type_oem = CHARGER_TYPE_DEFAULT;
 	pr_smb(PR_STATUS, "triggered\n");
+
+#ifdef CONFIG_BOARD_FUJISAN
+	cancel_delayed_work(&chip->set_chg_current_batt_health);
+	schedule_delayed_work(&chip->set_chg_current_batt_health,
+				      round_jiffies_relative(msecs_to_jiffies
+					(BATT_COOL_CHECK_CYCLE_MS)));
+#endif
 	/* usb inserted */
 	read_usb_type(chip, &usb_type_name, &usb_supply_type);
 	pr_smb(PR_STATUS,
@@ -7111,6 +7240,11 @@ static irqreturn_t batt_warm_handler(int irq, void *_chip)
 	else
 		set_property_on_fg(chip, POWER_SUPPLY_PROP_WARM_TEMP, WARM_DECIDEGC);
 
+#ifdef CONFIG_BOARD_FUJISAN
+	cancel_delayed_work(&chip->set_chg_current_batt_health);
+	schedule_delayed_work(&chip->set_chg_current_batt_health,
+				      round_jiffies_relative(msecs_to_jiffies(0)));
+#endif
 	return IRQ_HANDLED;
 }
 
@@ -7155,6 +7289,11 @@ static irqreturn_t batt_cool_handler(int irq, void *_chip)
 				chip->float_voltage_comp);
 		}
 	}
+#ifdef CONFIG_BOARD_FUJISAN
+	cancel_delayed_work(&chip->set_chg_current_batt_health);
+	schedule_delayed_work(&chip->set_chg_current_batt_health,
+				      round_jiffies_relative(msecs_to_jiffies(0)));
+#endif
 	return IRQ_HANDLED;
 }
 
@@ -9285,6 +9424,10 @@ static void apsd_rerun_work(struct work_struct *work)
 #define OFFCHG_FORCE_POWEROFF_DELTA (HZ*60*10)
 #define NORMAL_FORCE_POWEROFF_DELTA (HZ*60*1)
 
+#ifdef CONFIG_BOARD_FUJISAN
+extern void set_safe_chg_current(void);
+#endif
+
 static void update_heartbeat(struct work_struct *work)
 {
 	//struct delayed_work *dwork = to_delayed_work(work);
@@ -9306,6 +9449,11 @@ static void update_heartbeat(struct work_struct *work)
 		pr_err("pmic fatal error:the_chip=null\n!!");
 		return;
 	}
+
+#ifdef CONFIG_BOARD_FUJISAN
+	set_safe_chg_current();
+#endif
+
 	if ((enable_to_shutdown != chip->last_enable_to_shutdown_status)
 		&& chip->probe_rerun_apsd == 1) {
 		pr_info("offcharging_flag:%d,enable_to_shutdown:%d,chip->last_enable_to_shutdown_status:%d\n",
@@ -9632,6 +9780,9 @@ static int smbchg_probe(struct spmi_device *spmi)
 	alarm_init(&chip->chg_overtime_alarm, ALARM_BOOTTIME, chg_overtime_alarm_expire_func);
 
 	INIT_WORK(&chip->usb_set_online_work, smbchg_usb_update_online_work);
+#ifdef CONFIG_BOARD_FUJISAN
+	INIT_DELAYED_WORK(&chip->set_chg_current_batt_health, set_chg_current_batt_health_work);
+#endif
 	INIT_DELAYED_WORK(&chip->update_heartbeat_work, update_heartbeat);
 	INIT_DELAYED_WORK(&chip->apsd_rerun_work, apsd_rerun_work);
 	INIT_DELAYED_WORK(&chip->parallel_en_work, smbchg_parallel_usb_en_work);
