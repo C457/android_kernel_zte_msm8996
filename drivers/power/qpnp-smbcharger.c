@@ -4224,10 +4224,14 @@ static int smbchg_icl_loop_disable_check(struct smbchg_chip *chip)
 
 	return rc;
 }
+
+#ifndef CONFIG_BOARD_FUJISAN
 int get_design_capacity(void)
 {
 	return zte_chip->design_capacity;
 }
+#endif
+
 #define UNKNOWN_BATT_TYPE	"Unknown Battery"
 #define LOADING_BATT_TYPE	"Loading Battery Data"
 static int smbchg_config_chg_battery_type(struct smbchg_chip *chip)
