@@ -28,6 +28,10 @@
 #include "mdss_dba_utils.h"
 #endif
 
+#ifdef CONFIG_BOARD_FUJISAN
+#include <linux/uaccess.h>
+#endif
+
 #define DT_CMD_HDR 6
 #define MIN_REFRESH_RATE 48
 #define DEFAULT_MDP_TRANSFER_TIME 14000
@@ -36,6 +40,1921 @@
 struct mutex zte_display_lock;
 int zte_display_init = 0;
 
+#ifdef CONFIG_BOARD_FUJISAN
+static struct mdss_panel_data *zte_panel_data = NULL;
+static char is_td4322_panel = 0;
+static char is_2nd_td4322_fw_update = 0;
+static int is_right_panel_off = 1;
+static int old_left_level = -50;
+void mdss_dsi_panel_5v_power(struct mdss_panel_data *pdata, int enable);
+int mdss_dsi_panel_reset_for_ts(struct mdss_panel_data *pdata, int enable);
+/********************* backlight reduce start *********************/
+unsigned int g_lcd_backlight_reduce = 0;
+static struct kobject *sys_lcd_backlight_reduce_kobj;
+static ssize_t lcd_backlight_reduce_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned int  retval = 0;
+
+	retval = snprintf(buf, 32, "%u\n", g_lcd_backlight_reduce);
+
+	return retval;
+}
+
+static ssize_t lcd_backlight_reduce_store(struct device *dev,
+				struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+
+	if (sscanf(buf, "%d", &input) != 1)
+		return -EINVAL;
+
+	pr_info("%s: lcd_backlight_reduce: %u.\n", __func__, input);
+	g_lcd_backlight_reduce = input;
+
+	return count;
+}
+
+static DEVICE_ATTR(lcd_backlight, 0664,  lcd_backlight_reduce_show,  lcd_backlight_reduce_store);
+
+static struct attribute *sys_lcd_backlight_reduce_attributes[] = {
+	&dev_attr_lcd_backlight.attr,
+	NULL
+};
+
+static struct attribute_group sys_lcd_backlight_reduce_attributes_group = {
+	.attrs = sys_lcd_backlight_reduce_attributes
+};
+
+static int create_sys_lcd_backlight_reduce(void)
+{
+	int err;
+
+	sys_lcd_backlight_reduce_kobj = kobject_create_and_add("lcd_backlight_reduce", NULL);
+	if (!sys_lcd_backlight_reduce_kobj) {
+		err = -EINVAL;
+		pr_info("%s: - ERROR Unable to create sys_lcd_backlight_reduce_kobj.\n", __func__);
+		return -EIO;
+	}
+
+	err = sysfs_create_group(sys_lcd_backlight_reduce_kobj, &sys_lcd_backlight_reduce_attributes_group);
+	if (err != 0) {
+		pr_info("%s - ERROR sys_lcd_backlight_reduce_attributes_group failed.\n", __func__);
+		kobject_put(sys_lcd_backlight_reduce_kobj);
+		return -EIO;
+	}
+
+	pr_info("%s succeeded.\n", __func__);
+
+	return err;
+}
+/********************* backlight reduce end *********************/
+
+#define HUE_JDI_CALIB_CMDS_COUNT 12
+#define HUE_JDI_CALIB_PARS_COUNT 192
+static int jdi_hue_left_calib = 0;
+static int jdi_hue_right_calib = 0;
+
+static char jdi_hue_ff_10_mode[] = {0xff, 0x10};
+static char jdi_hue_80_mode[] = {0x80, 0xE6};
+static char jdi_hue_81_mode[] = {0x81, 0xF0};
+static char jdi_hue_82_mode[] = {0x82, 0xFF};
+static char jdi_hue_83_mode[] = {0x83, 0xFF};
+static char jdi_hue_84_mode[] = {0x84, 0xF3};
+static char jdi_hue_85_mode[] = {0x85, 0xE4};
+static char jdi_hue_86_mode[] = {0x86, 0x00};
+static char jdi_hue_87_mode[] = {0x87, 0x10};
+static char jdi_hue_8A_mode[] = {0x8A, 0x00};
+static char jdi_hue_8B_mode[] = {0x8B, 0x00};
+static char jdi_hue_8C_mode[] = {0x8C, 0x00};
+static char jdi_hue_8D_mode[] = {0x8D, 0x17};
+static char jdi_hue_9D_mode[] = {0x9D, 0x0C};
+static char jdi_hue_89_mode[] = {0x89, 0x01};
+
+static char jdi_panel_rgb_set_001[] = {0xFF, 0x10};
+static char jdi_panel_rgb_set_10[] = {0x10, 0x0};
+static char jdi_panel_rgb_set_28[] = {0x28, 0x0};
+static char jdi_panel_rgb_set_002[] = {0xFF, 0x25};
+static char jdi_panel_rgb_set_003[] = {0xFB, 0x01};
+static char jdi_panel_rgb_set_004[] = {0x58, 0x01};
+static char jdi_panel_rgb_set_005[] = {0x59, 0x00};
+static char jdi_panel_rgb_set_006[] = {0x50, 0x00};
+static char jdi_panel_rgb_set_007[] = {0x51, 0x00};
+static char jdi_panel_rgb_set_008[] = {0x52, 0x00};
+static char jdi_panel_rgb_set_009[] = {0x53, 0x00};
+static char jdi_panel_rgb_set_010[] = {0x54, 0x00};
+static char jdi_panel_rgb_set_011[] = {0x55, 0x00};
+static char jdi_panel_rgb_set_012[] = {0x56, 0x00};
+static char jdi_panel_rgb_set_013[] = {0x57, 0x00};
+static char jdi_panel_rgb_set_014[] = {0x5E, 0x01};
+static char jdi_panel_rgb_set_015[] = {0x5A, 254};
+static char jdi_panel_rgb_set_016[] = {0x5B, 0};
+static char jdi_panel_rgb_set_017[] = {0x5C, 0};
+static char jdi_panel_rgb_set_018[] = {0xFF, 0x10};
+static char jdi_panel_rgb_set_11[] = {0x11, 0x0};
+static char jdi_panel_rgb_set_29[] = {0x29, 0x0};
+
+static struct dsi_cmd_desc jdi_panel_rgb_set_cmds[] = {
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_001)}, jdi_panel_rgb_set_001},
+	{{DTYPE_DCS_WRITE, 1, 0, 0, 120, sizeof(jdi_panel_rgb_set_11)}, jdi_panel_rgb_set_11},
+	{{DTYPE_DCS_WRITE, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_29)}, jdi_panel_rgb_set_29},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_001)}, jdi_panel_rgb_set_001},
+	{{DTYPE_DCS_WRITE, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_28)}, jdi_panel_rgb_set_28},
+	{{DTYPE_DCS_WRITE, 1, 0, 0, 120, sizeof(jdi_panel_rgb_set_10)}, jdi_panel_rgb_set_10},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_002)}, jdi_panel_rgb_set_002},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_003)}, jdi_panel_rgb_set_003},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_004)}, jdi_panel_rgb_set_004},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_005)}, jdi_panel_rgb_set_005},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_006)}, jdi_panel_rgb_set_006},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_007)}, jdi_panel_rgb_set_007},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_008)}, jdi_panel_rgb_set_008},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_009)}, jdi_panel_rgb_set_009},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_010)}, jdi_panel_rgb_set_010},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_011)}, jdi_panel_rgb_set_011},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_012)}, jdi_panel_rgb_set_012},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_013)}, jdi_panel_rgb_set_013},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_014)}, jdi_panel_rgb_set_014},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_015)}, jdi_panel_rgb_set_015},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_016)}, jdi_panel_rgb_set_016},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 255, sizeof(jdi_panel_rgb_set_017)}, jdi_panel_rgb_set_017},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_panel_rgb_set_018)}, jdi_panel_rgb_set_018},
+};
+
+int mdss_dsi_panel_rgb_set_cmds_send(int ndx)
+{
+	struct dcs_cmd_req cmdreq;
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	pr_info("%s: enter ndx=%d\n", __func__, ndx);
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+
+	if (ctrl == NULL) {
+		pr_err("%s: ctrl == NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_err("%s: ctrl is power off, could't send hue calib cmds\n", __func__);
+		return -EINVAL;
+	}
+
+	memset(&cmdreq, 0, sizeof(cmdreq));
+
+	cmdreq.cmds = jdi_panel_rgb_set_cmds;
+	cmdreq.cmds_cnt = ARRAY_SIZE(jdi_panel_rgb_set_cmds);
+
+	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_HS_MODE;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+	pr_info("%s: end\n", __func__);
+
+	return 0;
+}
+
+
+/* for defatult par */
+static char jdi_test_gamma_cabc[2] = {0x55, 0x00}; /* DTYPE_DCS_READ */
+static struct dsi_cmd_desc panel_cabc_cmd[] = {
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(jdi_test_gamma_cabc)},
+		jdi_test_gamma_cabc
+	}
+};
+
+static char jdi_test_gamma_001[] = {0xFF, 0x20};
+static char jdi_test_gamma_002[] = {0xAE, 0x01};
+static char jdi_test_gamma_003[] = {
+	0xB0, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_test_gamma_004[] = {
+	0xB1, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_test_gamma_005[] = {
+	0xB2, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_test_gamma_006[] = {
+	0xB3, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF};
+static char jdi_test_gamma_007[] = {0xFB, 0x01};
+static char jdi_test_gamma_008[] = {0xff, 0x10};
+
+/* for left par */
+static char jdi_calib_gamma_left_001[] = {0xFF, 0x20};
+/*static char jdi_calib_gamma_left_002[] = {0xFB, 0x01};*/
+
+static char jdi_test_gamma_ae_00[] = {0xAE, 0x00};
+
+static char jdi_calib_gamma_left_003[] = {
+	0xB0, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_left_004[] = {
+	0xB1, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_005[] = {
+	0xB2, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_006[] = {
+	0xB3, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_left_007[] = {
+	0xB4, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_left_008[] = {
+	0xB5, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_009[] = {
+	0xB6, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_010[] = {
+	0xB7, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_left_011[] = {
+	0xB8, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_left_012[] = {
+	0xB9, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_013[] = {
+	0xBA, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_014[] = {
+	0xBB, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+
+
+static char jdi_calib_gamma_left_015[] = {0xFF, 0x21};
+static char jdi_calib_gamma_left_016[] = {0xFB, 0x01};
+
+static char jdi_calib_gamma_left_017[] = {
+	0xB0, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_left_018[] = {
+	0xB1, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_019[] = {
+	0xB2, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_020[] = {
+	0xB3, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_left_021[] = {
+	0xB4, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_left_022[] = {
+	0xB5, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_023[] = {
+	0xB6, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_024[] = {
+	0xB7, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_left_025[] = {
+	0xB8, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_left_026[] = {
+	0xB9, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_027[] = {
+	0xBA, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_left_028[] = {
+	0xBB, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_left_029[] = {0xff, 0x10};
+
+/* for right par */
+static char jdi_calib_gamma_right_001[] = {0xFF, 0x20};
+/*static char jdi_calib_gamma_right_002[] = {0xFB, 0x01};*/
+
+static char jdi_calib_gamma_right_003[] = {
+	0xB0, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_right_004[] = {
+	0xB1, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_005[] = {
+	0xB2, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_006[] = {
+	0xB3, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_right_007[] = {
+	0xB4, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_right_008[] = {
+	0xB5, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_009[] = {
+	0xB6, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_010[] = {
+	0xB7, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_right_011[] = {
+	0xB8, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_right_012[] = {
+	0xB9, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_013[] = {
+	0xBA, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_014[] = {
+	0xBB, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+
+
+static char jdi_calib_gamma_right_015[] = {0xFF, 0x21};
+static char jdi_calib_gamma_right_016[] = {0xFB, 0x01};
+
+static char jdi_calib_gamma_right_017[] = {
+	0xB0, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_right_018[] = {
+	0xB1, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_019[] = {
+	0xB2, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_020[] = {
+	0xB3, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_right_021[] = {
+	0xB4, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_right_022[] = {
+	0xB5, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_023[] = {
+	0xB6, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_024[] = {
+	0xB7, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+
+static char jdi_calib_gamma_right_025[] = {
+	0xB8, 0x00, 0x00, 0x00, 0x64,
+	0x00, 0xC8, 0x01, 0x2C, 0x01,
+	0x90, 0x01, 0xF4, 0x02, 0x26,
+	0x02, 0x58};
+static char jdi_calib_gamma_right_026[] = {
+	0xB9, 0x02, 0x8A, 0x02, 0xBC,
+	0x02, 0xEE, 0x03, 0x20, 0x03,
+	0x52, 0x03, 0x84, 0x03, 0xB6,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_027[] = {
+	0xBA, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF, 0x03, 0xFF, 0x03,
+	0xFF, 0x03, 0xFF, 0x03, 0xFF,
+	0x03, 0xFF};
+static char jdi_calib_gamma_right_028[] = {
+	0xBB, 0x03, 0x63, 0x03, 0x74,
+	0x03, 0x86, 0x03, 0x9A, 0x03,
+	0xFF, 0x03, 0xFF};
+static char jdi_calib_gamma_right_029[] = {0xff, 0x10};
+
+static struct dsi_cmd_desc hue_calib_jdi_cmds_default[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 10, sizeof(jdi_test_gamma_001)}, jdi_test_gamma_001},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_test_gamma_002)}, jdi_test_gamma_002},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_test_gamma_003)}, jdi_test_gamma_003},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_test_gamma_004)}, jdi_test_gamma_004},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_test_gamma_005)}, jdi_test_gamma_005},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_test_gamma_006)}, jdi_test_gamma_006},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_test_gamma_007)}, jdi_test_gamma_007},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_test_gamma_008)}, jdi_test_gamma_008}
+};
+
+static struct dsi_cmd_desc hue_calib_jdi_cmds_left[] = {
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_001)}, jdi_calib_gamma_left_001},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_test_gamma_ae_00)}, jdi_test_gamma_ae_00},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_003)}, jdi_calib_gamma_left_003},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_004)}, jdi_calib_gamma_left_004},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_005)}, jdi_calib_gamma_left_005},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_006)}, jdi_calib_gamma_left_006},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_007)}, jdi_calib_gamma_left_007},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_008)}, jdi_calib_gamma_left_008},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_009)}, jdi_calib_gamma_left_009},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_010)}, jdi_calib_gamma_left_010},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_011)}, jdi_calib_gamma_left_011},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_012)}, jdi_calib_gamma_left_012},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_013)}, jdi_calib_gamma_left_013},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_014)}, jdi_calib_gamma_left_014},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_015)}, jdi_calib_gamma_left_015},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_016)}, jdi_calib_gamma_left_016},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_017)}, jdi_calib_gamma_left_017},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_018)}, jdi_calib_gamma_left_018},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_019)}, jdi_calib_gamma_left_019},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_020)}, jdi_calib_gamma_left_020},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_021)}, jdi_calib_gamma_left_021},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_022)}, jdi_calib_gamma_left_022},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_023)}, jdi_calib_gamma_left_023},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_024)}, jdi_calib_gamma_left_024},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_025)}, jdi_calib_gamma_left_025},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_026)}, jdi_calib_gamma_left_026},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_left_027)}, jdi_calib_gamma_left_027},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_calib_gamma_left_028)}, jdi_calib_gamma_left_028},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_calib_gamma_left_029)}, jdi_calib_gamma_left_029}
+};
+
+static struct dsi_cmd_desc hue_calib_jdi_cmds_right[] = {
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_001)}, jdi_calib_gamma_right_001},
+	/*{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_002)}, jdi_calib_gamma_right_002},*/
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_test_gamma_ae_00)}, jdi_test_gamma_ae_00},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_003)}, jdi_calib_gamma_right_003},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_004)}, jdi_calib_gamma_right_004},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_005)}, jdi_calib_gamma_right_005},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_006)}, jdi_calib_gamma_right_006},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_007)}, jdi_calib_gamma_right_007},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_008)}, jdi_calib_gamma_right_008},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_009)}, jdi_calib_gamma_right_009},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_010)}, jdi_calib_gamma_right_010},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_011)}, jdi_calib_gamma_right_011},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_012)}, jdi_calib_gamma_right_012},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_013)}, jdi_calib_gamma_right_013},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_014)}, jdi_calib_gamma_right_014},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_015)}, jdi_calib_gamma_right_015},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_016)}, jdi_calib_gamma_right_016},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_017)}, jdi_calib_gamma_right_017},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_018)}, jdi_calib_gamma_right_018},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_019)}, jdi_calib_gamma_right_019},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_020)}, jdi_calib_gamma_right_020},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_021)}, jdi_calib_gamma_right_021},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_022)}, jdi_calib_gamma_right_022},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_023)}, jdi_calib_gamma_right_023},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_024)}, jdi_calib_gamma_right_024},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_025)}, jdi_calib_gamma_right_025},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_026)}, jdi_calib_gamma_right_026},
+	{{DTYPE_DCS_LWRITE, 0, 0, 0, 0, sizeof(jdi_calib_gamma_right_027)}, jdi_calib_gamma_right_027},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_calib_gamma_right_028)}, jdi_calib_gamma_right_028},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(jdi_calib_gamma_right_029)}, jdi_calib_gamma_right_029}
+};
+
+struct parm_dev {
+	char *array_addr;
+	int array_size;
+};
+
+static struct parm_dev jdi_left_0_data[HUE_JDI_CALIB_CMDS_COUNT] = {
+	{jdi_calib_gamma_left_003, sizeof(jdi_calib_gamma_left_003)},
+	{jdi_calib_gamma_left_004, sizeof(jdi_calib_gamma_left_004)},
+	{jdi_calib_gamma_left_005, sizeof(jdi_calib_gamma_left_005)},
+	{jdi_calib_gamma_left_006, sizeof(jdi_calib_gamma_left_006)},
+	{jdi_calib_gamma_left_007, sizeof(jdi_calib_gamma_left_007)},
+	{jdi_calib_gamma_left_008, sizeof(jdi_calib_gamma_left_008)},
+	{jdi_calib_gamma_left_009, sizeof(jdi_calib_gamma_left_009)},
+	{jdi_calib_gamma_left_010, sizeof(jdi_calib_gamma_left_010)},
+	{jdi_calib_gamma_left_011, sizeof(jdi_calib_gamma_left_011)},
+	{jdi_calib_gamma_left_012, sizeof(jdi_calib_gamma_left_012)},
+	{jdi_calib_gamma_left_013, sizeof(jdi_calib_gamma_left_013)},
+	{jdi_calib_gamma_left_014, sizeof(jdi_calib_gamma_left_014)}
+};
+
+static struct parm_dev jdi_left_1_data[HUE_JDI_CALIB_CMDS_COUNT] = {
+	{jdi_calib_gamma_left_017, sizeof(jdi_calib_gamma_left_017)},
+	{jdi_calib_gamma_left_018, sizeof(jdi_calib_gamma_left_018)},
+	{jdi_calib_gamma_left_019, sizeof(jdi_calib_gamma_left_019)},
+	{jdi_calib_gamma_left_020, sizeof(jdi_calib_gamma_left_020)},
+	{jdi_calib_gamma_left_021, sizeof(jdi_calib_gamma_left_021)},
+	{jdi_calib_gamma_left_022, sizeof(jdi_calib_gamma_left_022)},
+	{jdi_calib_gamma_left_023, sizeof(jdi_calib_gamma_left_023)},
+	{jdi_calib_gamma_left_024, sizeof(jdi_calib_gamma_left_024)},
+	{jdi_calib_gamma_left_025, sizeof(jdi_calib_gamma_left_025)},
+	{jdi_calib_gamma_left_026, sizeof(jdi_calib_gamma_left_026)},
+	{jdi_calib_gamma_left_027, sizeof(jdi_calib_gamma_left_027)},
+	{jdi_calib_gamma_left_028, sizeof(jdi_calib_gamma_left_028)}
+};
+
+static struct parm_dev jdi_right_0_data[HUE_JDI_CALIB_CMDS_COUNT] = {
+	{jdi_calib_gamma_right_003, sizeof(jdi_calib_gamma_right_003)},
+	{jdi_calib_gamma_right_004, sizeof(jdi_calib_gamma_right_004)},
+	{jdi_calib_gamma_right_005, sizeof(jdi_calib_gamma_right_005)},
+	{jdi_calib_gamma_right_006, sizeof(jdi_calib_gamma_right_006)},
+	{jdi_calib_gamma_right_007, sizeof(jdi_calib_gamma_right_007)},
+	{jdi_calib_gamma_right_008, sizeof(jdi_calib_gamma_right_008)},
+	{jdi_calib_gamma_right_009, sizeof(jdi_calib_gamma_right_009)},
+	{jdi_calib_gamma_right_010, sizeof(jdi_calib_gamma_right_010)},
+	{jdi_calib_gamma_right_011, sizeof(jdi_calib_gamma_right_011)},
+	{jdi_calib_gamma_right_012, sizeof(jdi_calib_gamma_right_012)},
+	{jdi_calib_gamma_right_013, sizeof(jdi_calib_gamma_right_013)},
+	{jdi_calib_gamma_right_014, sizeof(jdi_calib_gamma_right_014)}
+};
+
+static struct parm_dev jdi_right_1_data[HUE_JDI_CALIB_CMDS_COUNT] = {
+	{jdi_calib_gamma_right_017, sizeof(jdi_calib_gamma_right_017)},
+	{jdi_calib_gamma_right_018, sizeof(jdi_calib_gamma_right_018)},
+	{jdi_calib_gamma_right_019, sizeof(jdi_calib_gamma_right_019)},
+	{jdi_calib_gamma_right_020, sizeof(jdi_calib_gamma_right_020)},
+	{jdi_calib_gamma_right_021, sizeof(jdi_calib_gamma_right_021)},
+	{jdi_calib_gamma_right_022, sizeof(jdi_calib_gamma_right_022)},
+	{jdi_calib_gamma_right_023, sizeof(jdi_calib_gamma_right_023)},
+	{jdi_calib_gamma_right_024, sizeof(jdi_calib_gamma_right_024)},
+	{jdi_calib_gamma_right_025, sizeof(jdi_calib_gamma_right_025)},
+	{jdi_calib_gamma_right_026, sizeof(jdi_calib_gamma_right_026)},
+	{jdi_calib_gamma_right_027, sizeof(jdi_calib_gamma_right_027)},
+	{jdi_calib_gamma_right_028, sizeof(jdi_calib_gamma_right_028)}
+};
+
+#define HUE_CALIB_CMDS_37_COUNT 31
+#define HUE_CALIB_CMDS_38_COUNT 56
+static char lcd_hue_calib_cmds_30[] = {0x30, 0x00, 0x00, 0x02, 0xA7};
+static char lcd_hue_calib_cmds_b0[] = {0xb0, 0x00};
+
+static char hue_calib_cmds_37_default[HUE_CALIB_CMDS_37_COUNT] = {
+	0xC7, 0x00, 0x10, 0x1A,
+	0x26, 0x35, 0x43, 0x4C,
+	0x5A, 0x3C, 0x44, 0x4F,
+	0x5D, 0x6E, 0x75, 0x77,
+	0x00, 0x10, 0x1A, 0x26,
+	0x36, 0x44, 0x4C, 0x59,
+	0x3D, 0x45, 0x50, 0x5E,
+	0x6E, 0x75, 0x77
+};
+
+static char hue_calib_cmds_38_default[HUE_CALIB_CMDS_38_COUNT] = {
+	0xC8, 0x01, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+};
+
+static char hue_calib_cmds_37_left[HUE_CALIB_CMDS_37_COUNT] = {
+	0xC7, 0x00, 0x10, 0x1A,
+	0x26, 0x35, 0x43, 0x4C,
+	0x5A, 0x3C, 0x44, 0x4F,
+	0x5D, 0x6E, 0x75, 0x77,
+	0x00, 0x10, 0x1A, 0x26,
+	0x36, 0x44, 0x4C, 0x59,
+	0x3D, 0x45, 0x50, 0x5E,
+	0x6E, 0x75, 0x77
+};
+
+static char hue_calib_cmds_38_left[HUE_CALIB_CMDS_38_COUNT] = {
+	0xC8, 0x01, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+};
+
+static char hue_calib_cmds_37_right[HUE_CALIB_CMDS_37_COUNT] = {
+	0xC7, 0x00, 0x10, 0x1A,
+	0x26, 0x35, 0x43, 0x4C,
+	0x5A, 0x3C, 0x44, 0x4F,
+	0x5D, 0x6E, 0x75, 0x77,
+	0x00, 0x10, 0x1A, 0x26,
+	0x36, 0x44, 0x4C, 0x59,
+	0x3D, 0x45, 0x50, 0x5E,
+	0x6E, 0x75, 0x77
+};
+
+static char hue_calib_cmds_38_right[HUE_CALIB_CMDS_38_COUNT] = {
+	0xC8, 0x01, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0xFC, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0xFC, 0x00,
+};
+
+/*static char led_hue_mode1[] = {0x84, 0x80};*/
+
+static struct dsi_cmd_desc hue_calib_cmds_default[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(lcd_hue_calib_cmds_30)}, lcd_hue_calib_cmds_30},
+	{{DTYPE_GEN_WRITE2, 1, 0, 0, 0, sizeof(lcd_hue_calib_cmds_b0)}, lcd_hue_calib_cmds_b0},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, HUE_CALIB_CMDS_37_COUNT}, hue_calib_cmds_37_default},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, HUE_CALIB_CMDS_38_COUNT}, hue_calib_cmds_38_default},
+	/*{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(led_hue_mode1)}, led_hue_mode1},*/
+};
+
+static struct dsi_cmd_desc hue_calib_cmds_left[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(lcd_hue_calib_cmds_30)}, lcd_hue_calib_cmds_30},
+	{{DTYPE_GEN_WRITE2, 1, 0, 0, 0, sizeof(lcd_hue_calib_cmds_b0)}, lcd_hue_calib_cmds_b0},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, HUE_CALIB_CMDS_37_COUNT}, hue_calib_cmds_37_left},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, HUE_CALIB_CMDS_38_COUNT}, hue_calib_cmds_38_left},
+	/*{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(led_hue_mode1)}, led_hue_mode1},*/
+};
+
+static struct dsi_cmd_desc hue_calib_cmds_right[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(lcd_hue_calib_cmds_30)}, lcd_hue_calib_cmds_30},
+	{{DTYPE_GEN_WRITE2, 1, 0, 0, 0, sizeof(lcd_hue_calib_cmds_b0)}, lcd_hue_calib_cmds_b0},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, HUE_CALIB_CMDS_37_COUNT}, hue_calib_cmds_37_right},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, HUE_CALIB_CMDS_38_COUNT}, hue_calib_cmds_38_right},
+	/*{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(led_hue_mode1)}, led_hue_mode1},*/
+};
+
+int mdss_dsi_panel_hue_calib_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
+	bool send_default_pars);
+static ssize_t mdss_dsi_panel_hue_calib_proc_write_truly(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos, int ndx)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	char *p = NULL, *pbuf = NULL;
+	char buf[1024] = {0};
+	unsigned long length;
+	int i = 0, cnt = 0, value = 0;
+	char hue_calib_values[(HUE_CALIB_CMDS_37_COUNT + HUE_CALIB_CMDS_38_COUNT - 2)] = {0};
+	char *hue_calib_cmds_37 = NULL;
+	char *hue_calib_cmds_38 = NULL;
+
+	if (count < 1) {
+		pr_err("%s: count < 1 return!\n", __func__);
+		return -EINVAL;
+	}
+
+	pr_info("%s: count=%d ndx=%d\n", __func__, (int)count, ndx);
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+
+	if (count == 1) {
+		pr_info("%s: count == 1 send default hue cmds!\n", __func__);
+		if (ctrl) {
+			mdss_dsi_panel_hue_calib_cmds_send(ctrl, true);
+			if (ndx == DSI_CTRL_LEFT)
+				jdi_hue_left_calib = 0;
+			else
+				jdi_hue_right_calib = 0;
+		} else {
+			pr_err("%s: ctrl is NULL\n", __func__);
+		}
+
+		return count;
+	}
+
+	length = count > 1024 ? 1024 : count;
+	if (copy_from_user(&buf[0], buffer, length)) {
+		pr_err("%s: copy_from_user error!\n", __func__);
+		return -EFAULT;
+	}
+
+	buf[length - 1] = '\0';	/*Ensure end string */
+	pbuf = &buf[0];
+	p = strsep((char **)(&pbuf), ",");
+	while (p != NULL) {
+		if (kstrtoint((const char *)p, 16, &value)) {
+			pr_err("%s: input value error, can't kstrtoint!\n", __func__);
+			return count;
+		}
+
+		hue_calib_values[cnt] = value;
+		cnt++;
+
+		p = strsep((char **)(&pbuf), ",");
+	}
+
+	if (cnt != (HUE_CALIB_CMDS_37_COUNT + HUE_CALIB_CMDS_38_COUNT - 2)) {
+		pr_err("%s: input value count error, count:%d, need cound:%d\n", __func__,
+					cnt, (HUE_CALIB_CMDS_37_COUNT + HUE_CALIB_CMDS_38_COUNT - 2 - 1));
+		return count;
+	}
+
+	if (ndx == DSI_CTRL_RIGHT) {
+		hue_calib_cmds_37 = hue_calib_cmds_37_right;
+		hue_calib_cmds_38 = hue_calib_cmds_38_right;
+	} else {
+		hue_calib_cmds_37 = hue_calib_cmds_37_left;
+		hue_calib_cmds_38 = hue_calib_cmds_38_left;
+	}
+
+	for (i = 0; i < (HUE_CALIB_CMDS_37_COUNT - 1); i++) {
+		value = hue_calib_values[i];
+		hue_calib_cmds_37[i+1] = value;
+		pr_info("%s: hue_calib_cmds_37[%d]=0x%x\n", __func__, i + 1, hue_calib_cmds_37[i+1]);
+	}
+
+	for (i = 0; i < (HUE_CALIB_CMDS_38_COUNT - 1); i++) {
+		value = hue_calib_values[i + (HUE_CALIB_CMDS_37_COUNT - 1)];
+		hue_calib_cmds_38[i+1] = value;
+		pr_info("%s: hue_calib_cmds_38[%d]=0x%x\n", __func__, i + 1, hue_calib_cmds_38[i+1]);
+	}
+
+	if (ctrl) {
+		mdss_dsi_panel_hue_calib_cmds_send(ctrl, false);
+		if (ndx == DSI_CTRL_LEFT)
+			jdi_hue_left_calib = 1;
+		else
+			jdi_hue_right_calib = 1;
+	} else {
+		pr_err("%s: ctrl is NULL\n", __func__);
+	}
+
+	return count;
+}
+
+static int mdss_dsi_panel_hue_calib_proc_show_truly(struct seq_file *m,
+	void *v, int ndx)
+{
+	char values[(HUE_CALIB_CMDS_37_COUNT + HUE_CALIB_CMDS_38_COUNT) * 4] = {0};
+	char *hue_calib_cmds_37 = NULL;
+	char *hue_calib_cmds_38 = NULL;
+	u32 i = 0, l = 0;
+
+	if (ndx == DSI_CTRL_RIGHT) {
+		hue_calib_cmds_37 = hue_calib_cmds_37_right;
+		hue_calib_cmds_38 = hue_calib_cmds_38_right;
+	} else {
+		hue_calib_cmds_37 = hue_calib_cmds_37_left;
+		hue_calib_cmds_38 = hue_calib_cmds_38_left;
+	}
+
+	for (i = 1; i < HUE_CALIB_CMDS_37_COUNT; i++) {
+		l = strlen(values);
+		snprintf(values + l, sizeof(values), "%x,", hue_calib_cmds_37[i]);
+	}
+
+	for (i = 1; i < HUE_CALIB_CMDS_38_COUNT; i++) {
+		l = strlen(values);
+		snprintf(values + l, sizeof(values), "%x,", hue_calib_cmds_38[i]);
+	}
+
+	pr_info("%s: ndx=%d, values: %s\n", __func__, ndx, values);
+
+	return seq_printf(m, "%s\n", values);
+}
+
+int mdss_dsi_panel_cabc_cmds_send(int ndx, int cabc_level)
+{
+	struct dcs_cmd_req cmdreq;
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	pr_info("%s: enter ndx=%d cabc_level=%d\n", __func__, ndx, cabc_level);
+
+	if (cabc_level < 0 || cabc_level > 3) {
+		pr_err("%s: cabc level error. cabc_level=%d\n", __func__, cabc_level);
+		return -EINVAL;
+	}
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+
+	if (ctrl == NULL) {
+		pr_err("%s: ctrl == NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_err("%s: ctrl is power off, could't send hue calib cmds\n", __func__);
+		return -EINVAL;
+	}
+
+	memset(&cmdreq, 0, sizeof(cmdreq));
+
+	jdi_test_gamma_cabc[1] = (unsigned char)cabc_level;
+	cmdreq.cmds = panel_cabc_cmd;
+	cmdreq.cmds_cnt = ARRAY_SIZE(panel_cabc_cmd);
+
+	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_HS_MODE;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+	pr_info("%s: end\n", __func__);
+
+	return 0;
+}
+
+int mdss_dsi_panel_hue_calib_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
+	bool send_default_pars)
+{
+	struct dcs_cmd_req cmdreq;
+	struct mdss_panel_info *pinfo;
+
+	if (ctrl == NULL) {
+		pr_err("%s: ctrl == NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_err("%s: ctrl->ndx=%d is power off, could't send hue calib cmds\n",
+				__func__, ctrl->ndx);
+		return -EINVAL;
+	}
+
+	pinfo = &(ctrl->panel_data.panel_info);
+	if (pinfo->dcs_cmd_by_left) {
+		if (ctrl->ndx != DSI_CTRL_LEFT)
+			pr_err("%s: dcs_cmd_by_left ctrl->ndx != DSI_CTRL_LEFT\n", __func__);
+			return -EINVAL;
+	}
+
+	if ((ctrl->ndx == DSI_CTRL_LEFT && (old_left_level == 0 || old_left_level == -50))
+		 || (ctrl->ndx == DSI_CTRL_RIGHT && is_right_panel_off == 1)) {
+		pr_err("%s: ctrl->ndx=%d backlight is off, could't send hue cmds\n", __func__, ctrl->ndx);
+		return -EINVAL;
+	}
+
+	pr_info("%s: ndx=%d send_default_pars=%d is_td4322_panel=%d\n",
+				__func__, ctrl->ndx, send_default_pars, is_td4322_panel);
+	memset(&cmdreq, 0, sizeof(cmdreq));
+
+	if (is_td4322_panel) {
+		if (send_default_pars) {
+			cmdreq.cmds = hue_calib_cmds_default;
+			cmdreq.cmds_cnt = ARRAY_SIZE(hue_calib_cmds_default);
+		} else {
+			if (ctrl->ndx == DSI_CTRL_LEFT) {
+				cmdreq.cmds = hue_calib_cmds_left;
+				cmdreq.cmds_cnt = ARRAY_SIZE(hue_calib_cmds_left);
+			} else {
+				cmdreq.cmds = hue_calib_cmds_right;
+				cmdreq.cmds_cnt = ARRAY_SIZE(hue_calib_cmds_right);
+			}
+		}
+	} else {
+		if (send_default_pars) {
+			cmdreq.cmds = hue_calib_jdi_cmds_default;
+			cmdreq.cmds_cnt = ARRAY_SIZE(hue_calib_jdi_cmds_default);
+		} else {
+			if (ctrl->ndx == DSI_CTRL_LEFT) {
+				cmdreq.cmds = hue_calib_jdi_cmds_left;
+				cmdreq.cmds_cnt = ARRAY_SIZE(hue_calib_jdi_cmds_left);
+			} else {
+				cmdreq.cmds = hue_calib_jdi_cmds_right;
+				cmdreq.cmds_cnt = ARRAY_SIZE(hue_calib_jdi_cmds_right);
+			}
+		}
+	}
+
+	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_LP_MODE;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+	pr_info("%s: end\n", __func__);
+
+	return 0;
+}
+
+static ssize_t mdss_dsi_panel_hue_calib_proc_write(struct file *file,
+	const char __user *buffer,
+				size_t count, loff_t *pos, int ndx, int reg_n)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	if (is_td4322_panel) {
+		mdss_dsi_panel_hue_calib_proc_write_truly(file, buffer, count, pos, ndx);
+	} else {
+		char *p = NULL, *p_par = NULL, *pbuf = NULL;
+		char buf[1024] = {0};
+		unsigned long length;
+		int cnt = 0, cnt_value = 0, cnt_pars = 0, value = 0;
+		struct parm_dev *jdi_gamma_data = NULL;
+
+		if (count < 1) {
+			pr_err("%s: count < 1 return!\n", __func__);
+			return -EINVAL;
+		}
+
+		pr_info("%s: ndx=%d reg_n=%d count=%d\n", __func__, ndx, reg_n, (int)count);
+
+		ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+
+		if (count == 1) {
+			if (ctrl) {
+				pr_info("%s: count == 1 send default hue cmds!\n", __func__);
+				mdss_dsi_panel_hue_calib_cmds_send(ctrl, true);
+				if (ndx == DSI_CTRL_LEFT)
+					jdi_hue_left_calib = 0;
+				else
+					jdi_hue_right_calib = 0;
+			} else {
+				pr_err("%s: ctrl is NULL\n", __func__);
+			}
+
+			return count;
+		}
+
+		length = count > 1024 ? 1024 : count;
+		if (copy_from_user(&buf[0], buffer, length)) {
+			pr_err("%s: copy_from_user error!\n", __func__);
+			return -EFAULT;
+		}
+
+		buf[length - 1] = '\0';	/*Ensure end string */
+		pbuf = &buf[0];
+		cnt_pars = 0;
+
+		if (ndx == DSI_CTRL_LEFT) {
+			if (reg_n == 0) {
+				jdi_gamma_data = jdi_left_0_data;
+			} else {
+				jdi_gamma_data = jdi_left_1_data;
+			}
+		} else {
+			if (reg_n == 0) {
+				jdi_gamma_data = jdi_right_0_data;
+			} else {
+				jdi_gamma_data = jdi_right_1_data;
+			}
+		}
+
+		p_par = strsep((char **)(&pbuf), ".");
+		while (p_par != NULL && cnt < (HUE_JDI_CALIB_CMDS_COUNT)) {
+			int cmd_cnt = jdi_gamma_data[cnt].array_size;
+
+			p = strsep((char **)(&p_par), ",");
+			while (p != NULL) {
+				if (kstrtoint((const char *)p, 16, &value)) {
+					pr_err("%s: input value error, can't kstrtoint!\n", __func__);
+					return count;
+				}
+
+				cnt_pars++;
+
+				pr_info("%s: ndx=%d reg_n=%d cnt=%d cnt_value=%d value=0x%x cnt_pars=%d\n",
+							__func__, ndx, reg_n, cnt, cnt_value, value, cnt_pars);
+
+				if (cnt_value < cmd_cnt)
+					jdi_gamma_data[cnt].array_addr[cnt_value] = value;
+				else {
+					pr_err("%s: input value count error, cnt_value=%d cmd_cnt=%d\n",
+							__func__, cnt_value, cmd_cnt);
+					return count;
+				}
+
+				cnt_value++;
+
+				p = strsep((char **)(&p_par), ",");
+			}
+
+			cnt++;
+			cnt_value = 0;
+			p_par = strsep((char **)(&pbuf), ".");
+		}
+
+		if (cnt != HUE_JDI_CALIB_CMDS_COUNT || cnt_pars != HUE_JDI_CALIB_PARS_COUNT) {
+			pr_err("%s: input value err, cnt:%d, need:%d cnt_pars:%d, need:%d\n",
+				__func__, cnt, HUE_JDI_CALIB_CMDS_COUNT, cnt_pars, HUE_JDI_CALIB_PARS_COUNT);
+			return count;
+		}
+
+		if (ctrl && reg_n == 1) {
+			if (ndx == DSI_CTRL_LEFT)
+				jdi_hue_left_calib = 1;
+			else
+				jdi_hue_right_calib = 1;
+			mdss_dsi_panel_hue_calib_cmds_send(ctrl, false);
+		} else {
+			pr_err("%s: ctrl is NULL or reg_n=%d, skip send cmds\n", __func__, reg_n);
+		}
+	}
+
+	return count;
+}
+
+static int mdss_dsi_panel_hue_calib_proc_show(struct seq_file *m,
+	void *v, int ndx, int reg_n)
+{
+	char values[HUE_JDI_CALIB_PARS_COUNT * (sizeof(int)+3) + 1] = {0};
+	u32 i = 0, j = 0, l = 0;
+
+	struct parm_dev *jdi_gamma_data = NULL;
+
+	if (is_td4322_panel) {
+		mdss_dsi_panel_hue_calib_proc_show_truly(m, v, ndx);
+	} else {
+		if (ndx == DSI_CTRL_LEFT) {
+			if (reg_n == 0) {
+				jdi_gamma_data = jdi_left_0_data;
+			} else {
+				jdi_gamma_data = jdi_left_1_data;
+			}
+		} else {
+			if (reg_n == 0) {
+				jdi_gamma_data = jdi_right_0_data;
+			} else {
+				jdi_gamma_data = jdi_right_1_data;
+			}
+		}
+
+		for (i = 0; i < HUE_JDI_CALIB_CMDS_COUNT; i++) {
+			int cmd_cnt = jdi_gamma_data[i].array_size;
+
+			for (j = 0; j < cmd_cnt; j++) {
+				pr_info("%s: left_0_data[%d]->array_addr[%d]=0x%x\n",
+					__func__, i, j, jdi_gamma_data[i].array_addr[j]);
+				l = strlen(values);
+				if (j == (cmd_cnt - 1)) {
+					if (i == (HUE_JDI_CALIB_CMDS_COUNT - 1))
+						snprintf(values + l, sizeof(int) + 2, "0x%x",
+									jdi_gamma_data[i].array_addr[j]);
+					else
+						snprintf(values + l, sizeof(int) + 3, "0x%x.",
+									jdi_gamma_data[i].array_addr[j]);
+				} else {
+					snprintf(values + l, sizeof(int) + 3, "0x%x,",
+								jdi_gamma_data[i].array_addr[j]);
+				}
+			}
+		}
+	}
+
+	pr_info("%s: ndx=%d, reg_n=%d values=%s\n", __func__, ndx, reg_n, values);
+
+	return seq_printf(m, "%s\n", values);
+}
+
+static int panel_cabc_proc_show(struct seq_file *m, void *v)
+{
+	pr_info("%s: cabc_level=%d\n",	__func__, jdi_test_gamma_cabc[1]);
+	seq_printf(m, "%d\n", jdi_test_gamma_cabc[1]);
+
+	return 0;
+}
+
+static int panel_cabc_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_cabc_proc_show, NULL);
+}
+
+static ssize_t panel_cabc_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	int ret;
+	int rc;
+
+	rc = kstrtoint_from_user(buffer, count, 0, &ret);
+	if (rc) {
+		pr_err("%s: kstrtoint_from_user failed, rc=%d\n", __func__, rc);
+		return rc;
+	}
+
+	mdss_dsi_panel_cabc_cmds_send(DSI_CTRL_LEFT, ret);
+	mdss_dsi_panel_cabc_cmds_send(DSI_CTRL_RIGHT, ret);
+
+	return count;
+}
+
+static const struct file_operations panel_lcd_cabc_proc_fops = {
+	.open		= panel_cabc_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_cabc_proc_write,
+};
+
+static int panel_rgb_set_proc_show(struct seq_file *m, void *v)
+{
+	pr_info("%s: mdss 0x5A=%d 0x5B=%d 0x5C=%d\n", __func__,
+		jdi_panel_rgb_set_015[1], jdi_panel_rgb_set_016[1], jdi_panel_rgb_set_017[1]);
+	seq_printf(m, "0x5A=%d 0x5B=%d 0x5C=%d\n", jdi_panel_rgb_set_015[1],
+		jdi_panel_rgb_set_016[1], jdi_panel_rgb_set_017[1]);
+
+	return 0;
+}
+
+static int panel_rgb_set_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_rgb_set_proc_show, NULL);
+}
+
+static ssize_t panel_rgb_set_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	char *p_par = NULL, *pbuf = NULL;
+	char buf[1024] = {0};
+	unsigned long length;
+	int cnt = 0, ndx = 0,  value = 0, values[3] = {0};
+
+	if (count < 1) {
+		pr_err("%s: count < 1 return!\n", __func__);
+		return -EINVAL;
+	}
+
+	pr_info("%s: count=%d\n", __func__, (int)count);
+
+	length = count > 1024 ? 1024 : count;
+	if (copy_from_user(&buf[0], buffer, length)) {
+		pr_err("%s: copy_from_user error!\n", __func__);
+		return -EFAULT;
+	}
+
+	buf[length - 1] = '\0';	/*Ensure end string */
+	pbuf = &buf[0];
+
+	p_par = strsep((char **)(&pbuf), " ");
+	while (p_par != NULL && cnt < 4) {
+		if (kstrtoint((const char *)p_par, 10, &value)) {
+			pr_err("%s: input value error, can't kstrtoint!\n", __func__);
+			return count;
+		}
+
+		pr_info("%s: cnt=%d value=%d: 0x%x\n",	__func__, cnt, value, value);
+		if (cnt == 0) {
+			if (value < 0 || value > 1) {
+				pr_info("%s: ndx error,coud 0 or 1 value =%d\n",	__func__, value);
+				return count;
+			}
+
+			ndx = value;
+		} else {
+			values[cnt - 1] = value;
+		}
+
+		cnt++;
+		p_par = strsep((char **)(&pbuf), " ");
+	}
+
+	jdi_panel_rgb_set_015[1] = (unsigned char)values[0];
+	jdi_panel_rgb_set_016[1] = (unsigned char)values[1];
+	jdi_panel_rgb_set_017[1] = (unsigned char)values[2];
+
+	mdss_dsi_panel_rgb_set_cmds_send(ndx);
+
+	return count;
+}
+
+static const struct file_operations panel_rgb_set_fops = {
+	.open		= panel_rgb_set_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_rgb_set_proc_write,
+};
+
+/*
+			39 01 00 00 00 00 05 2a 00 00 04 37
+			39 01 00 00 00 00 05 2b 00 78 07 7F
+			39 01 00 00 00 00 05 30 00 78 07 7F
+			15 01 00 00 00 00 02 12 00
+*/
+static char partial_display_mode = 0;
+static char lcd_partial_display_2A_cmd[5] = {0x2b, 0x00, 0x00, 0x04, 0x37};
+static char lcd_partial_display_2B_cmd[5] = {0x2b, 0x00, 0x00, 0x07, 0x7F};
+static char lcd_partial_display_30_cmd[5] = {0x30, 0x00, 0x00, 0x07, 0x7F};
+static char lcd_partial_display_12_cmd[2] = {0x12, 0x00};
+
+static int panel_partial_display_set_proc_show(struct seq_file *m, void *v)
+{
+	pr_info("%s:  2B[2]:0x%x, 2B[4]:0x%x, 30[2]:0x%x, 30[4]:0x%x\n",
+		__func__, lcd_partial_display_2B_cmd[2], lcd_partial_display_2B_cmd[4],
+		lcd_partial_display_30_cmd[2], lcd_partial_display_30_cmd[4]);
+	seq_printf(m, "2B[2]:0x%x, 2B[4]:0x%x, 30[2]:0x%x, 30[4]:0x%x\n",
+		lcd_partial_display_2B_cmd[2], lcd_partial_display_2B_cmd[4],
+		lcd_partial_display_30_cmd[2], lcd_partial_display_30_cmd[4]);
+
+	return 0;
+}
+
+static int panel_partial_display_set_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_partial_display_set_proc_show, NULL);
+}
+
+static struct dsi_cmd_desc panel_partitial_display_cmd[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 1, sizeof(lcd_partial_display_2A_cmd)}, lcd_partial_display_2A_cmd	},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 1, sizeof(lcd_partial_display_2B_cmd)}, lcd_partial_display_2B_cmd	},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 1, sizeof(lcd_partial_display_2B_cmd)}, lcd_partial_display_30_cmd	},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(lcd_partial_display_2B_cmd)}, lcd_partial_display_12_cmd	}
+};
+
+static int mdss_dsi_panel_partial_display_cmds_send(int ndx, int mode)
+{
+	struct dcs_cmd_req cmdreq;
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	pr_info("%s: enter ndx=%d mode=%d\n", __func__, ndx, mode);
+
+	if (mode < 0 || mode > 10) {
+		pr_err("%s: mode error. mode=%d\n", __func__, mode);
+		return -EINVAL;
+	}
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+
+	if (ctrl == NULL) {
+		pr_err("%s: ctrl == NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_err("%s: ctrl is power off, could't send partial display cmds\n", __func__);
+		return -EINVAL;
+	}
+
+	memset(&cmdreq, 0, sizeof(cmdreq));
+
+	lcd_partial_display_2B_cmd[2] = 0x00;
+	lcd_partial_display_30_cmd[2] = 0x00;
+	lcd_partial_display_2B_cmd[3] = 0x07;
+	lcd_partial_display_30_cmd[3] = 0x07;
+	lcd_partial_display_2B_cmd[4] = 0x7F;
+	lcd_partial_display_30_cmd[4] = 0x7F;
+
+	if (mode == 1) {
+		if (ndx == DSI_CTRL_LEFT) {
+			lcd_partial_display_2B_cmd[2] = 0x4;
+			lcd_partial_display_30_cmd[2] = 0x4;
+		} else if (ndx == DSI_CTRL_RIGHT) {
+			lcd_partial_display_2B_cmd[4] = 0x7B;
+			lcd_partial_display_30_cmd[4] = 0x7B;
+		}
+	} else if (mode == 2) {
+		if (ndx == DSI_CTRL_LEFT) {
+			lcd_partial_display_2B_cmd[4] = 0x7B;
+			lcd_partial_display_30_cmd[4] = 0x7B;
+		} else if (ndx == DSI_CTRL_RIGHT) {
+			lcd_partial_display_2B_cmd[2] = 0x4;
+			lcd_partial_display_30_cmd[2] = 0x4;
+		}
+	} else if (mode == 0) {
+		lcd_partial_display_2B_cmd[2] = 0x00;
+		lcd_partial_display_30_cmd[2] = 0x00;
+		lcd_partial_display_2B_cmd[3] = 0x07;
+		lcd_partial_display_30_cmd[3] = 0x07;
+		lcd_partial_display_2B_cmd[4] = 0x7F;
+		lcd_partial_display_30_cmd[4] = 0x7F;
+	}
+
+	pr_info("%s: send panel_partitial_display_cmd 2B[2]:0x%x, 2B[3]:0x%x, 2B[4]:0x%x\n",
+		__func__, lcd_partial_display_2B_cmd[2], lcd_partial_display_2B_cmd[3], lcd_partial_display_2B_cmd[4]);
+	pr_info("%s: send panel_partitial_display_cmd 30[2]:0x%x, 30[3]:0x%x, 30[4]:0x%x\n",
+		__func__, lcd_partial_display_30_cmd[2], lcd_partial_display_30_cmd[3], lcd_partial_display_30_cmd[4]);
+	cmdreq.cmds = panel_partitial_display_cmd;
+	cmdreq.cmds_cnt = ARRAY_SIZE(panel_partitial_display_cmd);
+
+	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_LP_MODE;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+	pr_info("%s: end\n", __func__);
+
+	return 0;
+}
+
+static ssize_t panel_partial_display_set_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	int mode;
+	int rc;
+
+	if (count < 1) {
+		pr_err("%s: count < 1 return!\n", __func__);
+		return -EINVAL;
+	}
+
+	rc = kstrtoint_from_user(buffer, count, 0, &mode);
+	if (rc) {
+		pr_err("%s: kstrtoint_from_user failed, rc=%d\n", __func__, rc);
+		return rc;
+	}
+
+	pr_info("%s: mode:%d\n", __func__, mode);
+
+	mdss_dsi_panel_partial_display_cmds_send(DSI_CTRL_LEFT, mode);
+	mdss_dsi_panel_partial_display_cmds_send(DSI_CTRL_RIGHT, mode);
+
+	partial_display_mode = mode;
+
+	return count;
+}
+
+
+static const struct file_operations panel_partial_display_set_fops = {
+	.open		= panel_partial_display_set_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_partial_display_set_proc_write,
+};
+
+static int panel_hue_calib_0_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_calib_proc_show(m, v, DSI_CTRL_LEFT, 0);
+}
+
+static int panel_hue_calib_0_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_calib_0_proc_show, NULL);
+}
+
+static ssize_t panel_hue_calib_0_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_calib_proc_write(file, buffer, count, pos, DSI_CTRL_LEFT, 0);
+}
+
+static const struct file_operations panel_lcd_hue_calib_0_proc_fops = {
+	.open		= panel_hue_calib_0_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_calib_0_proc_write,
+};
+
+static int panel_hue_calib_01_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_calib_proc_show(m, v, DSI_CTRL_LEFT, 1);
+}
+
+static int panel_hue_calib_01_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_calib_01_proc_show, NULL);
+}
+
+static ssize_t panel_hue_calib_01_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_calib_proc_write(file, buffer, count, pos, DSI_CTRL_LEFT, 1);
+}
+
+static const struct file_operations panel_lcd_hue_calib_01_proc_fops = {
+	.open		= panel_hue_calib_01_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_calib_01_proc_write,
+};
+
+
+static int panel_hue_calib_1_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_calib_proc_show(m, v, DSI_CTRL_RIGHT, 0);
+}
+
+static int panel_hue_calib_1_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_calib_1_proc_show, NULL);
+}
+
+static ssize_t panel_hue_calib_1_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_calib_proc_write(file, buffer, count, pos, DSI_CTRL_RIGHT, 0);
+}
+
+static const struct file_operations panel_lcd_hue_calib_1_proc_fops = {
+	.open		= panel_hue_calib_1_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_calib_1_proc_write,
+};
+
+static int panel_hue_calib_11_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_calib_proc_show(m, v, DSI_CTRL_RIGHT, 1);
+}
+
+static int panel_hue_calib_11_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_calib_11_proc_show, NULL);
+}
+
+static ssize_t panel_hue_calib_11_proc_write(struct file *file,
+	const char __user *buffer,	size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_calib_proc_write(file, buffer, count, pos, DSI_CTRL_RIGHT, 1);
+}
+
+static const struct file_operations panel_lcd_hue_calib_11_proc_fops = {
+	.open		= panel_hue_calib_11_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_calib_11_proc_write,
+};
+
+static int mdss_dsi_panel_hue_proc_show_for_setting(struct seq_file *m, void *v, int ndx)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+	if (ctrl) {
+		pr_info("%s: ndx=%d ctrl->current_hue_0_level=%d\n",
+			__func__, ndx, ctrl->current_hue_level_for_setting);
+		seq_printf(m, "%d\n", ctrl->current_hue_level_for_setting);
+	} else {
+		pr_err("%s: ndx=%d ctrl is NULL\n", __func__, ndx);
+		seq_puts(m, "\n");
+	}
+
+	return 0;
+}
+
+static int mdss_dsi_panel_hue_proc_show(struct seq_file *m, void *v, int ndx)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+	if (ctrl) {
+		pr_info("%s: ndx=%d ctrl->current_hue_0_level=%d\n",
+			__func__, ndx, ctrl->current_hue_level);
+		seq_printf(m, "%d\n", ctrl->current_hue_level);
+	} else {
+		pr_err("%s: ndx=%d ctrl is NULL\n", __func__, ndx);
+		seq_puts(m, "\n");
+	}
+
+	return 0;
+}
+
+static struct dsi_cmd_desc hue_jdi_cmd[] = {
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_ff_10_mode)}, jdi_hue_ff_10_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_80_mode)}, jdi_hue_80_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_81_mode)}, jdi_hue_81_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_82_mode)}, jdi_hue_82_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_83_mode)}, jdi_hue_83_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_84_mode)}, jdi_hue_84_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_85_mode)}, jdi_hue_85_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_86_mode)}, jdi_hue_86_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_87_mode)}, jdi_hue_87_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_8A_mode)}, jdi_hue_8A_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_8B_mode)}, jdi_hue_8B_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_8C_mode)}, jdi_hue_8C_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_8D_mode)}, jdi_hue_8D_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_9D_mode)}, jdi_hue_9D_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_89_mode)}, jdi_hue_89_mode},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(jdi_hue_ff_10_mode)}, jdi_hue_ff_10_mode},
+
+};
+
+static char led_hue_mode[] = {0x84, 0x0};	/* DTYPE_GEN_LWRITE */
+static struct dsi_cmd_desc hue_cmd[] = {
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 0, sizeof(led_hue_mode)}, led_hue_mode},
+};
+u32 g_hue_default_for_setting[MDSS_DSI_HUE_NUM] = {0};
+
+int mdss_dsi_panel_hue(struct mdss_dsi_ctrl_pdata *ctrl, int level)
+{
+	struct dcs_cmd_req cmdreq;
+	struct mdss_panel_info *pinfo;
+
+	if (ctrl == NULL) {
+		pr_err("%s: ctrl == NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_err("%s: ctrl->ndx=%d ctrl is power off, could't send hue cmds\n", __func__, ctrl->ndx);
+		return -EINVAL;
+	}
+
+	if ((ctrl->ndx == DSI_CTRL_LEFT && (old_left_level == 0 || old_left_level == -50))
+		 || (ctrl->ndx == DSI_CTRL_RIGHT && is_right_panel_off == 1)) {
+		pr_err("%s: ctrl->ndx=%d backlight is off, could't send hue cmds\n", __func__, ctrl->ndx);
+		return -EINVAL;
+	}
+
+	pinfo = &(ctrl->panel_data.panel_info);
+	if (pinfo->dcs_cmd_by_left) {
+		if (ctrl->ndx != DSI_CTRL_LEFT)
+			pr_err("%s: dcs_cmd_by_left ctrl->ndx != DSI_CTRL_LEFT\n", __func__);
+			return -EINVAL;
+	}
+
+	pr_info("%s: ndx=%d level=%d\n", __func__, ctrl->ndx, level);
+	led_hue_mode[1] = level;
+	jdi_hue_87_mode[1] = level;/*default hue for jdi panel*/
+
+	memset(&cmdreq, 0, sizeof(cmdreq));
+	if (is_td4322_panel) {
+		pr_info("%s: ndx=%d level=%d for Truly\n", __func__, ctrl->ndx, led_hue_mode[1]);
+		cmdreq.cmds = hue_cmd;
+		cmdreq.cmds_cnt = 1;
+	} else {
+		pr_info("%s: ndx=%d level=%d for JDI hue\n", __func__, ctrl->ndx, jdi_hue_87_mode[1]);
+		cmdreq.cmds = hue_jdi_cmd;
+		cmdreq.cmds_cnt = ARRAY_SIZE(hue_jdi_cmd);
+	}
+
+	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_HS_MODE;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+	pr_info("%s:-\n", __func__);
+
+	return 0;
+}
+
+static ssize_t mdss_dsi_panel_hue_proc_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *pos, int ndx)
+{
+	int ret;
+	int rc;
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	rc = kstrtoint_from_user(buffer, count, 0, &ret);
+	if (rc) {
+		pr_err("%s: kstrtoint_from_user failed, rc=%d\n", __func__, rc);
+		return rc;
+	}
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+	if (ctrl) {
+		int i;
+		ctrl->current_hue_level = ret;
+		if (ctrl->current_hue_level_for_setting == -1)
+			ctrl->current_hue_level_for_setting = ret;
+		for (i = 0; i < MDSS_DSI_HUE_NUM; i++) {
+			if (g_hue_default_for_setting[i] == ret) {
+				ctrl->current_hue_level_index = i;
+				ctrl->current_hue_level_index_for_setting = i;
+			}
+			pr_info("%d, %d, %d\n", i, g_hue_default_for_setting[i], ret);
+		}
+		pr_info("%s : ndx=%d current_hue_0_level = %d ctrl->current_hue_level_index = %d\n",
+			__func__, ndx, ctrl->current_hue_level, ctrl->current_hue_level_index);
+		mdss_dsi_panel_hue(ctrl, ctrl->current_hue_level);
+	} else {
+		pr_err("%s: ctrl is NULL\n", __func__);
+	}
+
+	return count;
+}
+#define DEFAULT_VALUE_OF_SETTING 255
+static ssize_t mdss_dsi_panel_hue_proc_write_for_setting(struct file *file, const char __user *buffer,
+				size_t count, loff_t *pos, int ndx)
+{
+	int ret;
+	int rc;
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	rc = kstrtoint_from_user(buffer, count, 0, &ret);
+	if (rc) {
+		pr_err("%s: kstrtoint_from_user failed, rc=%d\n", __func__, rc);
+		return rc;
+	}
+
+	ctrl = mdss_dsi_get_ctrl_by_index(ndx);
+	if (ctrl) {
+		int setval = 0;
+
+		ctrl->current_hue_level_for_setting = ret;
+		/*The setting range is 0-512. 255 is default value of setting.*/
+		if (ctrl->current_hue_level_for_setting > DEFAULT_VALUE_OF_SETTING) {
+			int i, j;
+
+			i = ret-DEFAULT_VALUE_OF_SETTING;
+			j = DEFAULT_VALUE_OF_SETTING-ctrl->current_hue_level_index;
+			setval = ctrl->current_hue_level_index+(i*j)/DEFAULT_VALUE_OF_SETTING;
+		} else {
+			setval = ctrl->current_hue_level_index-
+				((DEFAULT_VALUE_OF_SETTING-ret)*ctrl->current_hue_level_index)/DEFAULT_VALUE_OF_SETTING;
+		}
+		if (setval < 0)
+			setval = 0;
+		else if (setval > 255)
+			setval = 255;
+
+		ctrl->current_hue_level_index_for_setting = setval;
+		pr_info("%s : ndx=%d index %d level_for_setting = %d setval %d %d\n", __func__,
+			ndx, ctrl->current_hue_level_index, ctrl->current_hue_level_for_setting,
+			setval, g_hue_default_for_setting[setval]);
+		mdss_dsi_panel_hue(ctrl, g_hue_default_for_setting[setval]);
+	} else {
+		pr_err("%s: ctrl is NULL\n", __func__);
+	}
+
+	return count;
+}
+
+static int panel_hue_0_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_proc_show(m, v, DSI_CTRL_LEFT);
+}
+
+static int panel_hue_0_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_0_proc_show, NULL);
+}
+
+static ssize_t panel_hue_0_proc_write(struct file *file, const char __user *buffer,
+				    size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_proc_write(file, buffer, count, pos, DSI_CTRL_LEFT);
+}
+
+static const struct file_operations panel_hue_0_proc_fops = {
+	.open		= panel_hue_0_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_0_proc_write,
+};
+
+static int panel_hue_1_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_proc_show(m, v, DSI_CTRL_RIGHT);
+}
+
+static int panel_hue_1_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_1_proc_show, NULL);
+}
+
+static ssize_t panel_hue_1_proc_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_proc_write(file, buffer, count, pos, DSI_CTRL_RIGHT);
+}
+
+static const struct file_operations panel_hue_1_proc_fops = {
+	.open		= panel_hue_1_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_1_proc_write,
+};
+
+static int panel_hue_0_set_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_proc_show_for_setting(m, v, DSI_CTRL_LEFT);
+}
+
+static int panel_hue_0_set_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_0_set_proc_show, NULL);
+}
+
+static ssize_t panel_hue_0_set_proc_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_proc_write_for_setting(file, buffer, count, pos, DSI_CTRL_LEFT);
+}
+
+static const struct file_operations panel_hue_0_set_proc_fops = {
+	.open		= panel_hue_0_set_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_0_set_proc_write,
+};
+
+static int panel_hue_1_set_proc_show(struct seq_file *m, void *v)
+{
+	return mdss_dsi_panel_hue_proc_show_for_setting(m, v, DSI_CTRL_RIGHT);
+}
+
+static int panel_hue_1_set_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, panel_hue_1_set_proc_show, NULL);
+}
+
+static ssize_t panel_hue_1_set_proc_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *pos)
+{
+	return mdss_dsi_panel_hue_proc_write_for_setting(file, buffer, count, pos, DSI_CTRL_RIGHT);
+}
+
+static const struct file_operations panel_hue_1_set_proc_fops = {
+	.open		= panel_hue_1_set_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= panel_hue_1_set_proc_write,
+};
+
+static int panel_hue_proc_init(void)
+{
+	int ret = 0;
+	static int initial_flag = 0;
+	struct proc_dir_entry *res;
+	int i = 0;
+	int jdi_hue_default = 0x10;
+	int jdi_hue_min = 0x0;
+	int jdi_hue_max = 0x20;
+
+	if (initial_flag == 1)
+		goto end;
+	else
+		initial_flag = 1;
+
+	res = proc_create("panel_hue_0_switch", S_IWUGO | S_IRUGO, NULL,  &panel_hue_0_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_0_switch\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_hue_0_switch\n");
+
+	res = proc_create("panel_hue_1_switch", S_IWUGO | S_IRUGO, NULL,  &panel_hue_1_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_1_switch\n");
+		return -ENOMEM;
+	}
+	res = proc_create("panel_hue_0_set", S_IWUGO | S_IRUGO, NULL,  &panel_hue_0_set_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_0_set\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_hue_0_set\n");
+
+	res = proc_create("panel_hue_1_set", S_IWUGO | S_IRUGO, NULL,  &panel_hue_1_set_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_1_set\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_hue_1_switch\n");
+	for (i = 0; i < MDSS_DSI_HUE_NUM; i++) {
+		if (is_td4322_panel == 1) {
+			if (i <= 128 && i > 0)
+				g_hue_default_for_setting[i] = 128 - i;
+			else if (i == 0)
+				g_hue_default_for_setting[i] = 127;
+			else
+				g_hue_default_for_setting[i] = 255 - (i - 129);
+		} else {
+			if (i < 128) {
+				g_hue_default_for_setting[i] =
+					(i * (jdi_hue_default - jdi_hue_min))/128 + jdi_hue_min;
+				if (g_hue_default_for_setting[i] < jdi_hue_min)
+					g_hue_default_for_setting[i] = jdi_hue_min;
+			} else if (i == 128) {
+				g_hue_default_for_setting[i] = jdi_hue_default;
+			} else {
+				g_hue_default_for_setting[i] =
+					((i - 127) * (jdi_hue_max - jdi_hue_default))/128 + jdi_hue_default;
+				if (g_hue_default_for_setting[i] > jdi_hue_max)
+					g_hue_default_for_setting[i] = jdi_hue_max;
+			}
+		}
+	}
+
+	res = proc_create("panel_cabc_level_switch", S_IWUGO | S_IRUGO, NULL,  &panel_lcd_cabc_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_cabc_level_switch\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_cabc_level_switch\n");
+
+	res = proc_create("panel_hue_dll_0_switch", S_IWUGO | S_IRUGO, NULL,  &panel_lcd_hue_calib_0_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_dll_0_switch\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_hue_dll_0_switch\n");
+
+	res = proc_create("panel_hue_dll_01_switch", S_IWUGO | S_IRUGO, NULL,  &panel_lcd_hue_calib_01_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_dll_01_switch\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_hue_dll_01_switch\n");
+
+	res = proc_create("panel_hue_dll_1_switch", S_IWUGO | S_IRUGO, NULL,  &panel_lcd_hue_calib_1_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_dll_1_switch\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_hue_dll_1_switch\n");
+
+	res = proc_create("panel_hue_dll_11_switch", S_IWUGO | S_IRUGO, NULL,  &panel_lcd_hue_calib_11_proc_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_hue_dll_11_switch\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_hue_dll_11_switch\n");
+
+	res = proc_create("panel_rgb_set", S_IWUGO | S_IRUGO, NULL,  &panel_rgb_set_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_rgb_set\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_rgb_set\n");
+
+	res = proc_create("panel_partial_display_set", S_IWUGO | S_IRUGO, NULL,  &panel_partial_display_set_fops);
+	if (!res) {
+		pr_err("failed to create /proc/panel_partial_display_set\n");
+		return -ENOMEM;
+	}
+	pr_info("created /proc/panel_partial_display_set\n");
+
+	create_sys_lcd_backlight_reduce();
+	pr_info("created /sys/lcd_backlight_reduce/lcd_backlight\n");
+end:
+	return ret;
+}
+
+#endif
 DEFINE_LED_TRIGGER(bl_led_trigger);
 
 void mdss_dsi_panel_pwm_cfg(struct mdss_dsi_ctrl_pdata *ctrl)
@@ -226,11 +2145,169 @@ static struct dsi_cmd_desc backlight_cmd[] = {
 	led_pwm2,}
 };
 
+#ifdef CONFIG_BOARD_FUJISAN
+static char truly_cmd_unlock[2] = {0xB0, 0x0};
+static char truly_cmd_B9[] = {0xB9, 0x6A, 0x3D, 0x19, 0x1E, 0x0A, 0x50, 0x50};
+static char truly_cmd_B9_default[] = {0xB9, 0x6F, 0x3D, 0x28, 0x3C, 0x14, 0xC8, 0xC8};
+static char truly_cmd_CE[] = {0xCE, 0x5D, 0x40, 0x49, 0x53, 0x59,
+	0x5E, 0x63, 0x68, 0x6E, 0x74,
+	0x7E, 0x8A, 0x98, 0xA8, 0xBB,
+	0xD0, 0xFF, 0x04, 0x00, 0x02,
+	0x02, 0x11, 0x00, 0x69, 0x5A};
+static char truly_cmd_CE_default[] = {0xCE, 0x5D, 0x40, 0x49, 0x53, 0x59,
+	0x5E, 0x63, 0x68, 0x6E, 0x74,
+	0x7E, 0x8A, 0x98, 0xA8, 0xBB,
+	0xD0, 0xFF, 0x04, 0x00, 0x04,
+	0x04, 0x42, 0x00, 0x69, 0x5A};
+static char truly_cmd_lock[2] = {0xB0, 0x03};
+static struct dsi_cmd_desc truly_b9_cmd[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_unlock)},
+		truly_cmd_unlock},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_B9)},
+		truly_cmd_B9},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_CE)},
+		truly_cmd_CE},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_lock)},
+		truly_cmd_lock}
+};
+static struct dsi_cmd_desc truly_b9_cmd_default[] = {
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_unlock)},
+		truly_cmd_unlock},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_B9_default)},
+		truly_cmd_B9_default},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_CE_default)},
+		truly_cmd_CE_default},
+	{{DTYPE_DCS_LWRITE, 1, 0, 0, 0, sizeof(truly_cmd_lock)},
+		truly_cmd_lock}
+};
+static void mdss_dsi_panel_send_b9_reg(struct mdss_dsi_ctrl_pdata *ctrl, int default_value)
+{
+	struct dcs_cmd_req cmdreq;
+
+	pr_info("%s: ctrl->ndx=%d default_value=%d\n", __func__, ctrl->ndx, default_value);
+
+	memset(&cmdreq, 0, sizeof(cmdreq));
+
+	if (default_value) {
+		cmdreq.cmds = truly_b9_cmd_default;
+	} else {
+		cmdreq.cmds = truly_b9_cmd;
+	}
+
+	cmdreq.cmds_cnt = 4;
+	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_HS_MODE;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+}
+
+extern void qpnp_wled_enable_cabc(int en_cabc);
+static u32 g_bl_values_default[MDSS_DSI_BL_CALIB_LEN][2] = {
+	{0, 0}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5},
+	{3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5},
+	{3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5},
+	{3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5},
+	{3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5},
+	{3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 5}, {3, 6}, {3, 6}, {3, 6}, {4, 7}, {4, 7},
+	{4, 7}, {4, 8}, {4, 8}, {5, 8}, {5, 9}, {5, 9}, {5, 10}, {5, 10}, {6, 10}, {6, 11},
+	{6, 11}, {6, 12}, {7, 12}, {7, 13}, {7, 13}, {7, 14}, {8, 14}, {8, 15}, {8, 15}, {9, 16},
+	{9, 16}, {9, 17}, {10, 18}, {10, 18}, {10, 19}, {11, 19}, {11, 20}, {11, 21}, {12, 21}, {12, 22},
+	{12, 23}, {13, 23}, {13, 24}, {14, 25}, {14, 26}, {14, 26}, {15, 27}, {15, 28}, {16, 29}, {16, 30},
+	{17, 31}, {17, 31}, {18, 32}, {18, 33}, {19, 34}, {19, 35}, {20, 36}, {20, 37}, {21, 38}, {21, 39},
+	{22, 40}, {22, 41}, {23, 42}, {23, 43}, {24, 44}, {25, 45}, {25, 46}, {26, 47}, {26, 49}, {27, 50},
+	{28, 51}, {28, 52}, {29, 53}, {30, 55}, {30, 56}, {31, 57}, {32, 58}, {33, 60}, {33, 61}, {34, 62},
+	{35, 64}, {35, 65}, {36, 66}, {37, 68}, {38, 69}, {39, 71}, {39, 72}, {40, 74}, {41, 75}, {42, 77},
+	{43, 78}, {44, 80}, {44, 82}, {45, 83}, {46, 85}, {47, 86}, {48, 88}, {49, 90}, {50, 92}, {51, 93},
+	{52, 95}, {53, 97}, {54, 99}, {55, 100}, {56, 102}, {57, 104}, {58, 106}, {59, 108}, {60, 110}, {61, 112},
+	{62, 114}, {63, 116}, {64, 118}, {65, 120}, {67, 122}, {68, 124}, {69, 126}, {70, 128}, {71, 131}, {72, 133},
+	{74, 135}, {75, 137}, {76, 139}, {77, 142}, {79, 144}, {80, 146}, {81, 149}, {82, 151}, {84, 154}, {85, 156},
+	{86, 158}, {88, 161}, {89, 163}, {90, 166}, {92, 168}, {93, 171}, {95, 174}, {96, 176}, {98, 179}, {99, 182},
+	{100, 184}, {102, 187}, {103, 190}, {105, 193}, {106, 195}, {108, 198}, {110, 201}, {111, 204}, {113, 207},
+	{114, 210},
+	{116, 213}, {118, 216}, {119, 219}, {121, 222}, {123, 225}, {124, 228}, {126, 231}, {128, 234}, {129, 237},
+	{131, 241},
+	{133, 244}, {135, 247}, {137, 250}, {138, 254}, {140, 257}, {142, 260}, {144, 264}, {146, 267}, {148, 271},
+	{150, 274},
+	{151, 278}, {153, 281}, {155, 285}, {157, 289}, {159, 292}, {161, 296}, {163, 300}, {165, 303}, {167, 307},
+	{169, 311},
+	{171, 315}, {174, 318}, {176, 322}, {178, 326}, {180, 330}, {182, 334}, {184, 338}, {187, 342}, {189, 346},
+	{191, 350},
+	{193, 354}, {195, 359}, {198, 363}, {200, 367}, {202, 371}, {205, 375}, {207, 380}, {209, 384}, {212, 389},
+	{214, 393},
+	{217, 397}, {219, 402}, {221, 406}, {224, 411}, {226, 415}, {245, 450}
+};
+
+static int mdss_dsi_panel_bklt_calib(struct mdss_panel_info *pinfo, int level)
+{
+	int i_level = 0, i_lux = 0, level_lux = 0, i_dest_lux = 0;
+
+	if (!pinfo) {
+		pr_err("%s: is NULL, return level=%d\n", __func__, level);
+		return level;
+	}
+
+	if (level > 255) {
+		pr_err("%s: level > 255, return 255\n", __func__);
+		return 255;
+	}
+
+	i_level = level;
+	i_dest_lux = g_bl_values_default[level][1];
+	level_lux = pinfo->bl_calib_values[level];
+
+	if (level_lux == 0) {
+		pr_info("%s: calib level_lux == 0, return g_bl_values_default[%d][0]=%d\n",
+					__func__, level, g_bl_values_default[level][0]);
+		return g_bl_values_default[level][0];
+	}
+
+	if (level_lux == i_dest_lux) {
+		return i_level;
+	} else if (level_lux > i_dest_lux) {
+		while (i_level-- > 0) {
+			i_lux = pinfo->bl_calib_values[i_level];
+			if (i_lux == i_dest_lux)
+				return i_level;
+			else if (i_lux < i_dest_lux)
+				break;
+		}
+
+		if (abs(i_dest_lux - i_lux) <= abs(pinfo->bl_calib_values[i_level + 1] - i_dest_lux))
+			return i_level;
+		else
+			return i_level + 1;
+	} else {
+		while (i_level++ < 255) {
+			i_lux = pinfo->bl_calib_values[i_level];
+			if (i_lux == i_dest_lux)
+				return i_level;
+			else if (i_lux > i_dest_lux)
+				break;
+		}
+
+		if (abs(i_dest_lux - i_lux) <= abs(pinfo->bl_calib_values[i_level - 1] - i_dest_lux))
+			return i_level;
+		else
+			return i_level - 1;
+	}
+
+	return i_level;
+}
+#endif
+
 static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 {
 	struct dcs_cmd_req cmdreq;
 	struct mdss_panel_info *pinfo;
 	int bl_level;
+
+#ifdef CONFIG_BOARD_FUJISAN
+	struct mdss_dsi_ctrl_pdata *sctrl = NULL;
+	static int disabled_cabc = 0;
+	int level_new;
+#endif
+
 
 	pinfo = &(ctrl->panel_data.panel_info);
 
@@ -243,6 +2320,55 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 		}
 	}
 
+#ifdef CONFIG_BOARD_FUJISAN
+	bl_level = level;
+	if (bl_level > 0 && bl_level <= 255) {
+		if (pinfo->is_bl_calib) {
+			bl_level = mdss_dsi_panel_bklt_calib(pinfo, bl_level);
+			if (bl_level < 3)
+				bl_level = 3;
+		} else {
+#ifndef ZTE_FASTMMI_MANUFACTURING_VERSION
+			bl_level = g_bl_values_default[bl_level][0];
+#else
+			bl_level = level;
+#endif
+		}
+	}
+
+
+	if (bl_level != 0 && bl_level < 3) {
+		bl_level = 3;
+	}
+	pr_info("LCD %s: ctrl->ndx=%d pinfo->is_bl_calib=%d flag=%d level=%d -> new_level=%d\n",
+		__func__, ctrl->ndx, pinfo->is_bl_calib, power_on_flag, level, bl_level);
+	#if 0
+	level_new = brightness_level_cali(bl_level);/* brightness remapping */
+	pr_info("LCD %s: Set Backlight directly level is %d,mapping level is %d\n",
+			__func__, bl_level, level_new);
+	#else
+	level_new = bl_level;
+	#endif
+	if (g_lcd_backlight_reduce && level_new) {
+		level_new = ((level_new-3)*g_lcd_backlight_reduce)/100 + 3;/* brightness reduce */
+
+		pr_info("LCD %s: Backlight brightness reduce %d level_new is %d\n",
+				__func__, g_lcd_backlight_reduce, level_new);
+
+		bl_level = level_new;
+
+		if (bl_level > 255)
+			bl_level = 255;
+
+		if (bl_level != 0 && bl_level < 3)
+			bl_level = 3;
+	}
+#else
+
+#ifdef ZTE_BRIGHTNESS_CALIBRATION_NOT
+	bl_level = level;
+	pr_err("LCD %s: flag=%d level=%d -> new_level=%d\n", __func__, power_on_flag, level, bl_level);
+#else
 	if (level <11)
 		bl_level = level;
 	else if (level == 11)
@@ -251,9 +2377,25 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 		bl_level = (15*level*level + 6059*level+29580)/10000;
 
 	pr_debug("LCD %s: flag=%d level=%d -> new_level=%d\n", __func__, power_on_flag, level, bl_level);
+#endif
+#endif
 
 	led_pwm1[1] = (unsigned char)bl_level;
 
+#ifdef CONFIG_BOARD_FUJISAN
+	if (power_on_flag == 1) {
+		led_pwm2[1] = 0x24;
+		power_on_flag = 2;
+	} else if (power_on_flag == 2) {
+		led_pwm2[1] = 0x24;
+		power_on_flag = 0;
+	} else
+		led_pwm2[1] = 0x2c;
+
+	if (bl_level == 0) {
+		led_pwm2[1] = 0x0;
+	}
+#else
 	if (power_on_flag == 1) {
 		led_pwm2[1] = 0x20;
 		power_on_flag = 2;
@@ -262,6 +2404,7 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 		power_on_flag = 0;
 	} else
 		led_pwm2[1] = 0x28;
+#endif
 
 	memset(&cmdreq, 0, sizeof(cmdreq));
 	cmdreq.cmds = backlight_cmd;
@@ -270,7 +2413,84 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 	cmdreq.rlen = 0;
 	cmdreq.cb = NULL;
 
+#ifdef CONFIG_BOARD_FUJISAN
+	if (ctrl->ndx == DSI_CTRL_LEFT) {
+		mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+		sctrl = mdss_dsi_get_other_ctrl(ctrl);
+		if (sctrl) {
+			if (old_left_level == -50
+				&& sctrl->panel_data.panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+				if (!disabled_cabc) {
+					qpnp_wled_enable_cabc(0);
+					is_right_panel_off = 1;
+					disabled_cabc = 1;
+				}
+			}
+		}
+
+		if (is_td4322_panel && bl_level != 0) {
+			if (bl_level < 30) {
+				mdss_dsi_panel_send_b9_reg(ctrl, 0);
+			} else {
+				mdss_dsi_panel_send_b9_reg(ctrl, 1);
+			}
+		}
+
+		if ((old_left_level == 0 || old_left_level == -50) && bl_level != 0) {
+			old_left_level = bl_level;
+
+			if (jdi_hue_left_calib == 1)
+				mdss_dsi_panel_hue_calib_cmds_send(ctrl, false);
+
+			if (ctrl->current_hue_level_index_for_setting >= 0
+				&& ctrl->current_hue_level_index_for_setting < MDSS_DSI_HUE_NUM) {
+				mdss_dsi_panel_hue(ctrl,
+					g_hue_default_for_setting[ctrl->current_hue_level_index_for_setting]);
+			}
+		} else {
+			old_left_level = bl_level;
+		}
+	} else if (ctrl->ndx == DSI_CTRL_RIGHT) {
+		if (ctrl->panel_data.panel_info.panel_power_state != MDSS_PANEL_POWER_OFF) {
+			if (bl_level != 0 && is_right_panel_off == 1) {
+				qpnp_wled_enable_cabc(1);
+				is_right_panel_off = 0;
+
+				if (jdi_hue_right_calib == 1)
+					mdss_dsi_panel_hue_calib_cmds_send(ctrl, false);
+
+				if (ctrl->current_hue_level_index_for_setting >= 0
+					&& ctrl->current_hue_level_index_for_setting < MDSS_DSI_HUE_NUM) {
+					mdss_dsi_panel_hue(ctrl,
+						g_hue_default_for_setting[ctrl->current_hue_level_index_for_setting]);
+				}
+			} else if (bl_level == 0) {
+				qpnp_wled_enable_cabc(0);
+				is_right_panel_off = 1;
+			}
+
+			mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+			if (is_td4322_panel && bl_level != 0) {
+				if (bl_level < 30) {
+					mdss_dsi_panel_send_b9_reg(ctrl, 0);
+				} else {
+					mdss_dsi_panel_send_b9_reg(ctrl, 1);
+				}
+			}
+		} else {
+			pr_info("LCD %s: sctrl is power off, not need send cmds!\n", __func__);
+			if (!disabled_cabc) {
+				qpnp_wled_enable_cabc(0);
+				is_right_panel_off = 1;
+				disabled_cabc = 1;
+			}
+		}
+	}
+#else
 	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+#endif
 	mutex_unlock(&zte_display_lock);
 }
 
@@ -772,12 +2992,28 @@ static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 			goto disp_en_gpio_err;
 		}
 	}
+#ifdef CONFIG_BOARD_FUJISAN
+	if (ctrl_pdata->ndx == DSI_CTRL_LEFT) {
+		rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
+		if (rc) {
+			pr_err("%s: request reset gpio failed, rc=%d\n",
+				__func__, rc);
+			goto rst_gpio_err;
+		}
+	} else {
+		rc = gpio_request(ctrl_pdata->rst2_gpio, "disp_rst2_n");
+		if (rc) {
+			pr_err("%s: request reset2 gpio failed, rc=%d\n", __func__, rc);
+		}
+	}
+#else
 	rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
 	if (rc) {
 		pr_err("request reset gpio failed, rc=%d\n",
 			rc);
 		goto rst_gpio_err;
 	}
+#endif
 	if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
 		rc = gpio_request(ctrl_pdata->bklt_en_gpio,
 						"bklt_enable");
@@ -802,6 +3038,9 @@ mode_gpio_err:
 		gpio_free(ctrl_pdata->bklt_en_gpio);
 bklt_en_gpio_err:
 	gpio_free(ctrl_pdata->rst_gpio);
+#ifdef CONFIG_BOARD_FUJISAN
+	gpio_free(ctrl_pdata->rst2_gpio);
+#endif
 rst_gpio_err:
 	if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
 		gpio_free(ctrl_pdata->disp_en_gpio);
@@ -875,6 +3114,23 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 
 	pr_debug("%s: enable = %d\n", __func__, enable);
 
+#ifdef CONFIG_BOARD_FUJISAN
+	if (ctrl_pdata->ndx == DSI_CTRL_RIGHT && is_td4322_panel) {
+		int count = 50;
+
+		while (is_2nd_td4322_fw_update == 1) {
+			pr_info("%s: waiting for ts fw update complete\n", __func__);
+			mdelay(200);
+			count--;
+			if (count == 0) {
+				pr_info("%s: waiting for ts fw update timeout\n", __func__);
+				break;
+			}
+		}
+
+	}
+#endif
+
 	if (enable) {
 		rc = mdss_dsi_request_gpios(ctrl_pdata);
 		if (rc) {
@@ -892,6 +3148,45 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 				}
 			}
 
+#ifdef CONFIG_BOARD_FUJISAN
+			if (ctrl_pdata->ndx == DSI_CTRL_LEFT) {
+				pr_info("%s: ndx=%d reset=%d seq!\n", __func__,
+						ctrl_pdata->ndx, ctrl_pdata->rst_gpio);
+				if (pdata->panel_info.rst_seq_len) {
+					rc = gpio_direction_output(ctrl_pdata->rst_gpio,
+					pdata->panel_info.rst_seq[0]);
+					if (rc) {
+						pr_err("%s: unable to set dir for rst gpio\n", __func__);
+						goto exit;
+					}
+				}
+
+				for (i = 0; i < pdata->panel_info.rst_seq_len; ++i) {
+					gpio_set_value((ctrl_pdata->rst_gpio),
+						pdata->panel_info.rst_seq[i]);
+					if (pdata->panel_info.rst_seq[++i])
+						usleep_range(pinfo->rst_seq[i] * 1000, pinfo->rst_seq[i] * 1000);
+				}
+			} else {
+				pr_info("%s: ndx=%d reset2=%d seq!\n", __func__,
+					ctrl_pdata->ndx, ctrl_pdata->rst2_gpio);
+				if (pdata->panel_info.rst_seq_len) {
+					rc = gpio_direction_output(ctrl_pdata->rst2_gpio,
+						pdata->panel_info.rst_seq[0]);
+					if (rc) {
+						pr_err("%s: unable to set dir for rst gpio\n", __func__);
+							goto exit;
+					}
+				}
+
+				for (i = 0; i < pdata->panel_info.rst_seq_len; ++i) {
+					gpio_set_value((ctrl_pdata->rst2_gpio),
+						pdata->panel_info.rst_seq[i]);
+					if (pdata->panel_info.rst_seq[++i])
+						usleep_range(pinfo->rst_seq[i] * 1000, pinfo->rst_seq[i] * 1000);
+				}
+			}
+#else
 			if (pdata->panel_info.rst_seq_len) {
 				rc = gpio_direction_output(ctrl_pdata->rst_gpio,
 					pdata->panel_info.rst_seq[0]);
@@ -908,6 +3203,7 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 				if (pdata->panel_info.rst_seq[++i])
 					usleep_range(pinfo->rst_seq[i] * 1000, pinfo->rst_seq[i] * 1000);
 			}
+#endif
 
 			if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
 				rc = gpio_direction_output(
@@ -950,8 +3246,21 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 			gpio_free(ctrl_pdata->disp_en_gpio);
 		}
+#ifdef CONFIG_BOARD_FUJISAN
+		if (ctrl_pdata->ndx == DSI_CTRL_LEFT) {
+			pr_info("%s: ndx=%d reset free!\n", __func__, ctrl_pdata->ndx);
+			gpio_set_value((ctrl_pdata->rst_gpio), 0);
+			gpio_free(ctrl_pdata->rst_gpio);
+		} else {
+			pr_info("%s: ndx=%d reset2 free!\n", __func__, ctrl_pdata->ndx);
+			gpio_set_value((ctrl_pdata->rst2_gpio), 0);
+			gpio_free(ctrl_pdata->rst2_gpio);
+		}
+		mdelay(20);
+#else
 		gpio_set_value((ctrl_pdata->rst_gpio), 0);
 		gpio_free(ctrl_pdata->rst_gpio);
+#endif
 		if (gpio_is_valid(ctrl_pdata->mode_gpio))
 			gpio_free(ctrl_pdata->mode_gpio);
 	}
@@ -960,6 +3269,39 @@ exit:
 	return rc;
 }
 
+#ifdef CONFIG_BOARD_FUJISAN
+void zte_lcd_power_ctrl_func(int enable)
+{
+	pr_info("%s: mdss td4322 %d, data %p, status %d, enable=%d\n",
+			__func__, is_td4322_panel, zte_panel_data,
+			zte_panel_data->panel_info.panel_power_state, enable);
+	if (is_td4322_panel && zte_panel_data
+		&& zte_panel_data->panel_info.panel_power_state == MDSS_PANEL_POWER_OFF) {
+		pr_info("%s: enable=%d\n", __func__, enable);
+		if (enable) {
+			is_2nd_td4322_fw_update = 1;
+			mdss_dsi_panel_reset_for_ts(zte_panel_data, enable);
+			mdss_dsi_panel_5v_power(zte_panel_data, enable);
+		} else {
+			mdss_dsi_panel_reset_for_ts(zte_panel_data, enable);
+			mdss_dsi_panel_5v_power(zte_panel_data, enable);
+			is_2nd_td4322_fw_update = 0;
+		}
+	}
+
+	mdelay(200);
+}
+EXPORT_SYMBOL(zte_lcd_power_ctrl_func);
+
+char zte_ts_is_td4322(void)
+{
+	if (is_td4322_panel)
+		return 1;
+
+	return 0;
+}
+EXPORT_SYMBOL(zte_ts_is_td4322);
+#endif
 /**
  * mdss_dsi_roi_merge() -  merge two roi into single roi
  *
@@ -1031,6 +3373,9 @@ static void mdss_dsi_send_col_page_addr(struct mdss_dsi_ctrl_pdata *ctrl,
 	paset[4] = (((roi->y - 1 + roi->h) & 0xFF));
 	set_col_page_addr_cmd[1].payload = paset;
 
+#ifdef CONFIG_BOARD_FUJISAN
+	led_pwm2[1] = 0x2C;
+#endif
 	memset(&cmdreq, 0, sizeof(cmdreq));
 	cmdreq.cmds_cnt = 2;
 	cmdreq.flags = CMD_REQ_COMMIT;
@@ -1157,6 +3502,9 @@ end:
 void mdss_dsi_panel_3v_power(struct mdss_panel_data *pdata, int enable)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+#ifdef CONFIG_BOARD_FUJISAN
+	int retval = 0;
+#endif
 
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
@@ -1168,7 +3516,95 @@ void mdss_dsi_panel_3v_power(struct mdss_panel_data *pdata, int enable)
 
 	pr_debug("LCD 3v_power GPIO(vsp):%d , Enable:%d\n",ctrl_pdata->lcd_3v_vsp_en_gpio, enable);
 
+#ifdef CONFIG_BOARD_FUJISAN
+	if (ctrl_pdata->ndx == DSI_CTRL_RIGHT && is_td4322_panel) {
+		int count = 50;
+
+		while (is_2nd_td4322_fw_update == 1) {
+			pr_info("%s: waiting for ts fw update complete\n", __func__);
+			mdelay(200);
+			count--;
+			if (count == 0) {
+				pr_info("%s: waiting for ts fw update timeout\n", __func__);
+				break;
+			}
+		}
+
+	}
+#endif
+
 	if (enable) {
+#ifdef CONFIG_BOARD_FUJISAN
+		if (ctrl_pdata->ndx == DSI_CTRL_LEFT) {
+			if (ctrl_pdata->lcd_2p8_reg) {
+				retval = regulator_enable(ctrl_pdata->lcd_2p8_reg);
+				if (retval < 0) {
+					pr_err("%s: lcd_2p8_reg regulator_enable failed\n", __func__);
+				} else {
+					pr_info("%s: lcd_2p8_reg regulator_enable successfully\n", __func__);
+				}
+			} else {
+				pr_err("%s: ctrl_pdata->lcd_2p8_reg not exist!\n", __func__);
+			}
+			mdelay(5);
+		}
+
+		if (ctrl_pdata->ndx == DSI_CTRL_RIGHT) {
+			/*qpnp_wled_enable_cabc(1);*//* enable pmic cabc */
+
+			if (ctrl_pdata->lcd2_2p8_reg) {
+				retval = regulator_enable(ctrl_pdata->lcd2_2p8_reg);
+				if (retval < 0) {
+					pr_err("%s: lcd2_2p8_reg regulator_enable failed\n", __func__);
+				} else {
+					pr_info("%s: lcd2_2p8_reg regulator_enable successfully\n", __func__);
+				}
+			} else {
+				pr_err("%s: ctrl_pdata->lcd2_2p8_reg not exist!\n", __func__);
+			}
+			mdelay(5);
+
+			/*if (gpio_is_valid(ctrl_pdata->lcd_5v_vsp_en_gpio)) {
+				pr_info("%s: enable lcd_5v_vsp_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsp_en_gpio), 1);
+			} else {
+				pr_err("%s:%d, lcd_5v_vsp_en_gpio not configured\n",
+					__func__, __LINE__);
+			}
+			mdelay(2);*/
+
+			if (ctrl_pdata->lcd2_5v_vsp_reg) {
+				retval = regulator_enable(ctrl_pdata->lcd2_5v_vsp_reg);
+				if (retval < 0) {
+					pr_err("%s: lcd2_5v_vsp_reg regulator_enable failed\n", __func__);
+				} else {
+					pr_info("%s: lcd2_5v_vsp_reg regulator_enable successfully\n", __func__);
+				}
+			} else {
+				pr_err("%s: ctrl_pdata->lcd2_5v_vsp_reg not exist!\n", __func__);
+			}
+
+			/*if (gpio_is_valid(ctrl_pdata->lcd_5v_vsn_en_gpio)) {
+				pr_info("%s: enable lcd_5v_vsn_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsn_en_gpio), 1);
+			} else {
+				pr_err("%s:%d, lcd_5v_vsn_en_gpio not configured\n",
+					__func__, __LINE__);
+			}
+			mdelay(20);*/
+
+			if (ctrl_pdata->lcd2_5v_vsn_reg) {
+				retval = regulator_enable(ctrl_pdata->lcd2_5v_vsn_reg);
+				if (retval < 0) {
+					pr_err("%s: lcd2_5v_vsn_reg regulator_enable failed\n", __func__);
+				} else {
+					pr_info("%s: lcd2_5v_vsn_reg regulator_enable successfully\n", __func__);
+				}
+			} else {
+				pr_err("%s: ctrl_pdata->lcd2_5v_vsn_reg not exist!\n", __func__);
+			}
+		}
+#endif
 		if (gpio_is_valid(ctrl_pdata->lcd_3v_vsp_en_gpio)){
 			//gpio_set_value((ctrl_pdata->lcd_5v_vsp_en_gpio), 1);
 			gpio_direction_output((ctrl_pdata->lcd_3v_vsp_en_gpio), 1);
@@ -1178,13 +3614,219 @@ void mdss_dsi_panel_3v_power(struct mdss_panel_data *pdata, int enable)
 		}
 		mdelay(5);
 	} else {
+#ifdef CONFIG_BOARD_FUJISAN
+		if (ctrl_pdata->ndx == DSI_CTRL_RIGHT) {
+			if (ctrl_pdata->lcd2_5v_vsn_reg) {
+				pr_info("%s: regulator_disable lcd2_5v_vsn_reg\n", __func__);
+				regulator_disable(ctrl_pdata->lcd2_5v_vsn_reg);
+			}
+			mdelay(20);
+
+			/*if (gpio_is_valid(ctrl_pdata->lcd_5v_vsn_en_gpio)) {
+				pr_info("%s: disable lcd_5v_vsn_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsn_en_gpio), 0);
+			}
+			mdelay(5);*/
+
+			if (ctrl_pdata->lcd2_5v_vsp_reg) {
+				pr_info("%s: regulator_disable lcd2_5v_vsp_reg\n", __func__);
+				regulator_disable(ctrl_pdata->lcd2_5v_vsp_reg);
+			}
+			mdelay(2);
+
+			/*if (gpio_is_valid(ctrl_pdata->lcd_5v_vsp_en_gpio)) {
+				pr_info("%s: disable lcd_5v_vsp_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsp_en_gpio), 0);
+			}
+			mdelay(2);*/
+		}
+#endif
 			if (gpio_is_valid(ctrl_pdata->lcd_3v_vsp_en_gpio)) {
 				//gpio_set_value((ctrl_pdata->lcd_5v_vsp_en_gpio), 0);
 				gpio_direction_output((ctrl_pdata->lcd_3v_vsp_en_gpio), 0);
 			}
 			mdelay(2);
+#ifdef CONFIG_BOARD_FUJISAN
+		if (ctrl_pdata->ndx == DSI_CTRL_RIGHT) {
+			if (ctrl_pdata->lcd2_2p8_reg) {
+				pr_info("%s: regulator_disable lcd2_2p8_reg\n", __func__);
+				regulator_disable(ctrl_pdata->lcd2_2p8_reg);
+			}
+
+			qpnp_wled_enable_cabc(0);/* disable pmic cabc */
+			is_right_panel_off = 1;
+		}
+
+		if (ctrl_pdata->ndx == DSI_CTRL_LEFT) {
+			if (ctrl_pdata->lcd_2p8_reg) {
+				pr_info("%s: regulator_disable lcd_2p8_reg\n", __func__);
+				regulator_disable(ctrl_pdata->lcd_2p8_reg);
+			}
+		}
+#endif
 	}
 }
+
+#ifdef CONFIG_BOARD_FUJISAN
+void mdss_dsi_panel_5v_power(struct mdss_panel_data *pdata, int enable)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int retval = 0;
+
+	if (pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return;
+	}
+
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+
+	if (enable) {
+		if (ctrl_pdata->ndx == DSI_CTRL_RIGHT) {
+			/*if (gpio_is_valid(ctrl_pdata->lcd_5v_vsp_en_gpio)) {
+				pr_info("%s: enable lcd_5v_vsp_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsp_en_gpio), 1);
+			} else {
+				pr_err("%s:%d, lcd_5v_vsp_en_gpio not configured\n",
+					__func__, __LINE__);
+			}
+			mdelay(20);
+
+			if (gpio_is_valid(ctrl_pdata->lcd_5v_vsn_en_gpio)) {
+				pr_info("%s: enable lcd_5v_vsn_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsn_en_gpio), 1);
+			} else {
+				pr_err("%s:%d, lcd_5v_vsn_en_gpio not configured\n",
+					__func__, __LINE__);
+			}
+			mdelay(20);*/
+
+			if (ctrl_pdata->lcd2_5v_vsp_reg) {
+				retval = regulator_enable(ctrl_pdata->lcd2_5v_vsp_reg);
+				if (retval < 0) {
+					pr_err("%s: lcd2_5v_vsp_reg regulator_enable failed\n", __func__);
+				} else {
+					pr_info("%s: lcd2_5v_vsp_reg regulator_enable successfully\n", __func__);
+				}
+			} else {
+				pr_err("%s: ctrl_pdata->lcd2_5v_vsp_reg not exist!\n", __func__);
+			}
+			mdelay(20);
+
+			if (ctrl_pdata->lcd2_5v_vsn_reg) {
+				retval = regulator_enable(ctrl_pdata->lcd2_5v_vsn_reg);
+				if (retval < 0) {
+					pr_err("%s: lcd2_5v_vsn_reg regulator_enable failed\n", __func__);
+				} else {
+					pr_info("%s: lcd2_5v_vsn_reg regulator_enable successfully\n", __func__);
+				}
+			} else {
+				pr_err("%s: ctrl_pdata->lcd2_5v_vsn_reg not exist!\n", __func__);
+			}
+			mdelay(20);
+		}
+	} else {
+		if (ctrl_pdata->ndx == DSI_CTRL_RIGHT) {
+			if (ctrl_pdata->lcd2_5v_vsn_reg) {
+				pr_info("%s: regulator_disable lcd2_5v_vsn_reg\n", __func__);
+				regulator_disable(ctrl_pdata->lcd2_5v_vsn_reg);
+			}
+			mdelay(20);
+
+			if (ctrl_pdata->lcd2_5v_vsp_reg) {
+				pr_info("%s: regulator_disable lcd2_5v_vsp_reg\n", __func__);
+				regulator_disable(ctrl_pdata->lcd2_5v_vsp_reg);
+			}
+			mdelay(20);
+
+			/*if (gpio_is_valid(ctrl_pdata->lcd_5v_vsp_en_gpio)) {
+				pr_info("%s: disable lcd_5v_vsp_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsp_en_gpio), 0);
+			}
+			mdelay(20);
+
+			if (gpio_is_valid(ctrl_pdata->lcd_5v_vsn_en_gpio)) {
+				pr_info("%s: disable lcd_5v_vsn_en_gpio\n", __func__);
+				gpio_direction_output((ctrl_pdata->lcd_5v_vsn_en_gpio), 0);
+			}
+			mdelay(20);*/
+		}
+	}
+}
+
+int mdss_dsi_panel_reset_for_ts(struct mdss_panel_data *pdata, int enable)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	struct mdss_panel_info *pinfo = NULL;
+	int i, rc = 0;
+
+	if (pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+
+	if (ctrl_pdata->ndx == DSI_CTRL_LEFT) {
+		pr_debug("%s:%d, not for DSI_CTRL_LEFT\n",
+			   __func__, __LINE__);
+		return rc;
+	}
+
+	pinfo = &(ctrl_pdata->panel_data.panel_info);
+	if ((mdss_dsi_is_right_ctrl(ctrl_pdata) &&
+		mdss_dsi_is_hw_config_split(ctrl_pdata->shared_data)) ||
+			pinfo->is_dba_panel) {
+		pr_debug("%s:%d, right ctrl gpio configuration not needed\n",
+			__func__, __LINE__);
+		return rc;
+	}
+
+	if (!gpio_is_valid(ctrl_pdata->rst_gpio)) {
+		pr_debug("%s:%d, reset line not configured\n",
+			   __func__, __LINE__);
+		return rc;
+	}
+
+	pr_debug("%s: enable = %d\n", __func__, enable);
+
+	if (enable) {
+		rc = gpio_request(ctrl_pdata->rst2_gpio, "disp_rst2_n");
+		if (rc) {
+			pr_err("%s: request reset2 gpio failed, rc=%d\n", __func__, rc);
+			return rc;
+		}
+
+
+		pr_info("%s: ndx=%d reset2=%d seq!\n", __func__,
+			ctrl_pdata->ndx, ctrl_pdata->rst2_gpio);
+		if (pdata->panel_info.rst_seq_len) {
+			rc = gpio_direction_output(ctrl_pdata->rst2_gpio,
+				pdata->panel_info.rst_seq[0]);
+			if (rc) {
+				pr_err("%s: unable to set dir for rst gpio\n", __func__);
+					goto exit;
+			}
+		}
+
+		for (i = 0; i < pdata->panel_info.rst_seq_len; ++i) {
+			gpio_set_value((ctrl_pdata->rst2_gpio),
+				pdata->panel_info.rst_seq[i]);
+			if (pdata->panel_info.rst_seq[++i])
+				usleep_range(pinfo->rst_seq[i] * 1000, pinfo->rst_seq[i] * 1000);
+		}
+	} else {
+		pr_info("%s: ndx=%d reset2 free!\n", __func__, ctrl_pdata->ndx);
+		gpio_set_value((ctrl_pdata->rst2_gpio), 0);
+		gpio_free(ctrl_pdata->rst2_gpio);
+		mdelay(20);
+	}
+
+exit:
+	return rc;
+}
+#endif
 
 static int mdss_dsi_panel_apply_display_setting(struct mdss_panel_data *pdata,
 							u32 mode)
@@ -1385,6 +4027,14 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 
 	if (on_cmds->cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, on_cmds, CMD_REQ_COMMIT);
+
+#ifdef CONFIG_BOARD_FUJISAN
+	if (partial_display_mode != 0) {
+		pr_info("%s: ndx=%d partial_display_mode=%d\n", __func__, ctrl->ndx, partial_display_mode);
+		msleep(VSYNC_DELAY);	/* wait for a vsync passed */
+		mdss_dsi_panel_partial_display_cmds_send(ctrl->ndx, partial_display_mode);
+	}
+#endif
 
 	if (pinfo->compression_mode == COMPRESSION_DSC)
 		mdss_dsi_panel_dsc_pps_send(ctrl, pinfo);
@@ -3365,6 +6015,15 @@ int mdss_dsi_panel_init(struct device_node *node,
 
 	pinfo = &ctrl_pdata->panel_data.panel_info;
 
+#ifdef CONFIG_BOARD_FUJISAN
+	if (ndx == DSI_CTRL_RIGHT) {
+		zte_panel_data = &ctrl_pdata->panel_data;
+		is_2nd_td4322_fw_update = 0;
+		pr_info("%s:%d, found 2nd panel data\n",
+						__func__, __LINE__);
+		}
+#endif
+
 	pr_debug("%s:%d\n", __func__, __LINE__);
 	pinfo->panel_name[0] = '\0';
 	panel_name = of_get_property(node, "qcom,mdss-dsi-panel-name", NULL);
@@ -3374,6 +6033,10 @@ int mdss_dsi_panel_init(struct device_node *node,
 	} else {
 		pr_info("%s: Panel Name = %s\n", __func__, panel_name);
 		strlcpy(&pinfo->panel_name[0], panel_name, MDSS_MAX_PANEL_LEN);
+#ifdef CONFIG_BOARD_FUJISAN
+		if (strnstr(panel_name, "td4322", MDSS_MAX_PANEL_LEN) != NULL)
+			is_td4322_panel = 1;
+#endif
 	}
 	rc = mdss_panel_parse_dt(node, ctrl_pdata);
 	if (rc) {
@@ -3385,6 +6048,16 @@ int mdss_dsi_panel_init(struct device_node *node,
 	pinfo->is_lpm_mode = false;
 	pinfo->esd_rdy = false;
 	pinfo->persist_mode = false;
+
+#ifdef CONFIG_BOARD_FUJISAN
+	memset(pinfo->bl_calib_values, 0, ARRAY_SIZE(pinfo->bl_calib_values));
+	pinfo->is_bl_calib = 0;
+
+	panel_hue_proc_init();
+	ctrl_pdata->current_hue_level_for_setting = -1;
+	ctrl_pdata->current_hue_level_index_for_setting = -1;
+	ctrl_pdata->current_hue_level_index = 128;
+#endif
 
 	ctrl_pdata->on = mdss_dsi_panel_on;
 	ctrl_pdata->post_panel_on = mdss_dsi_post_panel_on;

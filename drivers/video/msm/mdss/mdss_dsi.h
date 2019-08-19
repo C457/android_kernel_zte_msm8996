@@ -429,6 +429,20 @@ struct mdss_dsi_ctrl_pdata {
 	int panel_mode;
 	int irq_cnt;
 	int disp_te_gpio;
+#ifdef CONFIG_BOARD_FUJISAN
+	int disp_te2_gpio;
+	int rst2_gpio;
+	int lcd_5v_vsp_en_gpio;
+	int lcd_5v_vsn_en_gpio;
+	struct regulator *lcd_2p8_reg;
+	struct regulator *lcd2_2p8_reg;
+	struct regulator *lcd2_5v_vsp_reg;
+	struct regulator *lcd2_5v_vsn_reg;
+	int current_hue_level;
+	int current_hue_level_for_setting;
+	int current_hue_level_index;
+	int current_hue_level_index_for_setting;
+#endif
 	int rst_gpio;
 	int disp_en_gpio;
 	int bklt_en_gpio;
